@@ -129,7 +129,7 @@ Confidence legend:
 
 Path 1 (going active, action=2, current=1):
 1. `state[0] = 3` (intermediate)
-2. `bl 0x08011500` (apply state change?)
+2. `bl 0x08011500` → `spdif_subsystem_init` (writes PA2=LOW, reconfigs PA2/PA3, resets cached SPDIF state)
 3. `GPIO_WriteBit(GPIOF, 0x0001, 0)` — PF0 LOW: assert DSP reset
 4. `GPIO_WriteBit(GPIOC, 0x8000, 1)` — PC15 HIGH: audio rail ON
 5. 50 ms delay (`bl 0x0800D334`)
@@ -142,16 +142,35 @@ Path 1 (going active, action=2, current=1):
 12. `bl 0x08011508` (finalize)
 13. Return 2; settle: `state[0] = 2`
 
+(Note: although path 1 calls spdif_init which writes PA2=LOW, some later step must set PA2=HIGH for active operation — confirmed by ODR snapshot showing PA2=HIGH in active state. The PA2-HIGH write hasn't been located in the disasm yet; the BSRR breakpoint to catch it during the active-entry transition is a future investigation.)
+
 Path 2 (going standby, action=1, current=2):
 1. `state[0] = 4` (intermediate)
 2. `bl 0x0800A8DC(0)` (sub-state reset)
 3. Conditional `bl 0x0800B330` if `state[3] == 1`
 4. 200 ms delay (`bl 0x08008C20(200)`)
-5. `bl 0x08011500` (apply) and `bl 0x0800C48C`
-6. `GPIO_WriteBit(GPIOF, 0x0001, 0)` — PF0 LOW: assert DSP reset
-7. `bl 0x0800F2B8` (DSP shutdown sequence?)
-8. **`GPIO_WriteBit(GPIOC, 0x8000, 0)` — PC15 LOW: audio rail OFF**  ← This is the BL NOP'd by firmware_06
-9. `state[0] = 1` (final standby)
+5. **`bl 0x08011500` → `spdif_subsystem_init` — PA2 LOW: Toslink buffer OFF**  ← BL NOP'd in firmware_08 ★ THE ACTUAL RAIL KILLER
+6. `bl 0x0800C48C` → PB7 LOW chain (auxiliary, not the rail) — BL NOP'd in firmware_07+
+7. `GPIO_WriteBit(GPIOF, 0x0001, 0)` — PF0 LOW: assert DSP reset
+8. `bl 0x0800F2B8` (I²C1 shutdown: reconfigures PB8/PB9 to Analog)
+9. `GPIO_WriteBit(GPIOC, 0x8000, 0)` — PC15 LOW: auxiliary signal — BL NOP'd in firmware_06+
+10. `state[0] = 1` (final standby)
+
+### Recipe D capture (2026-06-05) — empirical proof of rail killer
+
+GDB code breakpoint at `0x0800d666` (the BRR-write inside `GPIO_WriteBit`) logged every clear-LOW call during IR-off transition:
+```
+BRR-write: port=0x48000000 mask=0x0004 lr=0x080103e1   ← ★ PA2 LOW (NEW finding)
+BRR-write: port=0x48000400 mask=0x0080 lr=0x0800c9ad   ← PB7 LOW (known)
+BRR-write: port=0x48001400 mask=0x0001 lr=0x0800a82d   ← PF0 LOW (DSP reset)
+BRR-write: port=0x48000800 mask=0x8000 lr=0x0800a83b   ← PC15 LOW (known)
+```
+
+ODR snapshots confirm PA2 transition (pre→post):
+- `GPIOA->ODR`: `0x84` → `0x80` (bit 2 cleared: PA2 went HIGH→LOW)
+- `GPIOB->ODR`: `0x4085` → `0x4005` (bit 7 cleared: PB7 went HIGH→LOW)
+- `GPIOC->ODR`: `0x8000` → `0x0` (bit 15 cleared: PC15 went HIGH→LOW)
+- `GPIOF->ODR`: `0x1` → `0x0` (PF0 went HIGH→LOW)
 
 ### Auto-standby trigger flow (event-loop thread)
 
@@ -295,16 +314,17 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 | ----- | ------------- | --------------------------------- |
 | PA0   | Input         | Button on bar                     |
 | PA1   | Input VeryHigh | **IR receiver** (best candidate based on speed setting) |
-| PA2   | Output_OD PU  | Open-drain — soft-I²C? control?   |
-| PA3   | Input         | Button on bar                     |
-| PA4   | UNCONFIGURED  | SPDIF Toslink trace lands here but firmware never reads it (presumably unused / dev path) |
+| **PA2** | **Output_PP**   | **★ SPDIF buffer / Toslink load-switch ENABLE.** Driven HIGH in active state (3V on Toslink Vcc), LOW in standby (0.8V leakage). Set LOW by `spdif_subsystem_init` at `0x080103dc`. Empirically confirmed via Recipe D ODR snapshots. |
+| **PA3** | **Input**     | **★ SPDIF activity input.** Read by `is_audio_active()` at `0x0801041C` as `(GPIOA->IDR >> 3) & 1`. SOT-23-5 buffer outputs HIGH when SPDIF audio present, LOW otherwise. |
+| PA4   | UNCONFIGURED  | Originally assumed to be SPDIF — but firmware never reads it. Likely unused / dev path. |
 | PA5   | AF_OD AF1     | TIM2_CH1_ETR — possibly audio mute/control PWM |
 | PA8   | Output_OD PU  |                                   |
-| PB7   | Output_OD     | (PB7 is also I2C1_SDA in AF1 — could be bit-banged I²C) |
+| **PB7** | **Output_PP** | Auxiliary, NOT the audio rail despite earlier hypothesis. Pulsed LOW→HIGH during active entry (reset-pulse pattern). NOP'd in firmware_07/08 with no observable effect on Toslink Vcc. |
 | PB11  | AF_OD AF1     | **I2C2_SDA** (the DSP bus)        |
 | PB12  | Output_OD PU  |                                   |
 | PB14  | Output_PP     |                                   |
-| PF0   | Output_PP     | (PF0 = OSC_IN by default — being used as GPIO here is unusual) |
+| **PC15** | **Output_PP** | Auxiliary signal. Goes HIGH in active, LOW in standby. NOT the Toslink rail gate (firmware_06 confirmed). Possibly drives an indicator or related rail. |
+| **PF0** | **Output_PP** | **★ DSP reset (active LOW).** Held LOW in standby (DSP held in reset). Goes HIGH ~50ms after rail-up during active entry. |
 
 ---
 
@@ -318,7 +338,7 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 | DSP                        | Renesas D2-92634-LR      | Has integrated SPDIFRX0/1. Talks to STM32 via I²C2. Firmware blob uploaded from STM32 flash at boot. |
 | Bluetooth                  | CSR/Qualcomm A64215      | A2DP receive; labelled SPI debug header on daughter board |
 | Wireless subwoofer link    | SWA12-TX (FCC NKR-SWA12) | Proprietary 2.4 GHz audio link to sub       |
-| Audio rail control         | (unidentified GPIO)      | STM32-gated. Active ≈ 3.0V, standby ≈ 0.8V. Per GDB capture: `transition_state` had GPIOF (0x48001400) and GPIOC (0x48000800) bases in R5/R7 — so the gate is a pin on PF or PC. |
+| Audio rail control         | **PA2 (★ identified 2026-06-05)** | STM32-gated via PA2 → SOT-23-5 buffer/load-switch enable. Active=HIGH (Toslink Vcc ≈ 3.0V), standby=LOW (Toslink Vcc ≈ 0.8V leakage). Identified via Recipe D GDB breakpoint in `GPIO_WriteBit` BRR path. |
 
 ---
 

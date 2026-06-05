@@ -63,8 +63,14 @@
 0x0800A7F0	transition_state_set_PF0_HIGH	LABEL	bl GPIO_WriteBit(GPIOF, 0x0001, 1) — DSP reset released
 0x0800A802	transition_state_set_state_4	LABEL	strb r0,#4 → state[0] (intermediate during standby entry)
 0x0800A828	transition_state_set_PF0_LOW_2	LABEL	bl GPIO_WriteBit(GPIOF, 0x0001, 0) — DSP reset asserted (standby path)
-0x0800A836	transition_state_set_PC15_LOW	LABEL	bl GPIO_WriteBit(GPIOC, 0x8000, 0) — audio rail OFF. NOP'd in firmware_06
+0x0800A836	transition_state_set_PC15_LOW	LABEL	bl GPIO_WriteBit(GPIOC, 0x8000, 0) — auxiliary signal off. NOP'd in firmware_06 (insufficient) and firmware_07
+0x0800A81E	transition_state_call_set_PB7_LOW	LABEL	bl 0x0800C48C → set_PB7_LOW — KILLS audio rail. NOP'd in firmware_07
+0x0800A796	transition_state_call_PB7_power_up	LABEL	bl 0x0800C4EC → power-up sequence including PB7 reset pulse
 0x0800A83C	transition_state_set_state_1	LABEL	strb r0,#1 → state[0] (final standby settled)
+0x0800C48C	set_PB7_LOW_wrapper	FUNC	4-instruction wrapper: bl 0x0800C9A0; called ONLY from transition_state standby path
+0x0800C4EC	PB7_power_up_sequence	FUNC	Active-path power-up: PB7 init, pulse reset, probe-via-I2C, optional notify(0,19) + delay; called ONLY from transition_state active path
+0x0800C9A0	set_PB7_LOW	FUNC	Sets PB7 LOW (GPIO_WriteBit(GPIOB, 0x80, 0))
+0x0800CA44	pulse_PB7_reset	FUNC	Pulses PB7 LOW for 30 ms then HIGH — classic PMIC reset
 0x0800ACA4	event_loop_thread	FUNC	Main UI/event RTX thread; entry passed to osThreadNew at app_main init
 0x0800ACAC	event_loop_thread_init2_BL	LABEL	bl 0x800AE78 — HIJACKED by firmware_05 (Goal #1)
 0x0800ACBC	event_loop_thread_queue_get	LABEL	bl osMessageQueueGet (blocking, 25-tick timeout)
@@ -109,8 +115,11 @@
 0x080102F4	create_rtx_obj_1	FUNC
 0x080102BC	create_rtx_obj_2	FUNC
 0x08010278	create_rtx_queue_group	FUNC	Creates 3 message queues at g_message_queues_b
-0x08011500	apply_state_change	FUNC	Called from transition_state after state[0] write
-0x08011508	transition_state_finalize	FUNC	Called near end of transition_state path 1
+0x08011500	spdif_subsystem_init_wrapper	FUNC	Thin wrapper: push {r4,lr}; bl spdif_subsystem_init; pop {r4,pc}. Called from transition_state path 1 (active entry) AND path 2 (standby entry — at 0x0800A81A, the rail killer) and boot init at 0x0800A5D0.
+0x08011508	transition_state_finalize	FUNC	Called near end of transition_state when going to active-stable (state[0]=2)
+0x080103BC	spdif_subsystem_init	FUNC	Enables GPIOA clock, writes PA2=LOW (BRR), reconfigs PA2 as Output_PP, reconfigs PA3 as Input, sets cached_spdif_state at 0x20002??? to -1. ★ PA2-LOW is the rail kill that disables the SOT-23-5 SPDIF buffer.
+0x0801041C	is_audio_active	FUNC	Reads PA3 = (GPIOA->IDR >> 3) & 1; returns 1 if HIGH (SPDIF activity detected)
+0x0800A81A	standby_path_bl_spdif_init	LABEL	BL to spdif_subsystem_init_wrapper from transition_state path 2 — NOP'd in firmware_08 to prevent PA2=LOW
 
 # === Patch shim (firmware_05, Goal #1) ===
 0x0801E800	patch_shim_autoboot_active	FUNC	22-byte shim: orig init 2 + transition_state(2) + notify(0, retval)

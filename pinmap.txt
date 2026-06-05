@@ -20,14 +20,37 @@ Notation: AF = STM32 alternate function number. OD = open-drain, PP = push-pull.
 ★★ Key pins for this project (verified) ★★
 -------------------------------------------
 
+  PA2   ★ SPDIF buffer / Toslink load-switch ENABLE.  Drives the SOT-23-5
+        chip's EN pin (or directly gates Toslink Vcc through a load switch).
+        - Active: PA2 = HIGH → Toslink Vcc ≈ 3.0 V
+        - Standby: PA2 = LOW → Toslink Vcc ≈ 0.8 V (leakage)
+        - Set LOW by `spdif_subsystem_init` at 0x080103DC (BRR write,
+          GPIOA mask 0x04).
+        - Called via wrapper 0x08011500 from transition_state at:
+            0x0800A762 (path 1 / active entry)  ★ also writes PA2=LOW initially
+            0x0800A81A (path 2 / standby entry) ★ THE RAIL KILL
+            0x0800A5D0 (one-shot boot init)
+        - Identified empirically via Recipe D GDB breakpoint (2026-06-05).
+        - firmware_08 NOPs the standby-path BL at 0x0800A81A to keep PA2 HIGH.
+        - Configured as Output_PP (push-pull, no pull) — note older static
+          analysis said "Output_OD PU" but that was a different init call site
+          (0x0801045E) which may be stale / from a different path.
+
   PA3   ★ SPDIF activity input.  Read by `is_audio_active()` at 0x0801041C as
         `(GPIOA->IDR >> 3) & 1`.  HIGH = audio signal present, LOW = silent.
         Configured as plain Input, Low speed — receives a clean level signal
         from the SOT-23-5 buffer (NOT the raw biphase data).
 
-  PC15  ★ Audio rail enable.  Written by `transition_state()` at 0x0800A776
-        (HIGH = active) and 0x0800A836 (LOW = standby) via GPIO_WriteBit.
-        Gates the Toslink Vcc rail and DSP power.  Pin mask = 0x8000.
+  PB7   Auxiliary — NOT the audio rail (despite earlier hypothesis).
+        Pulsed LOW→HIGH during active entry, set LOW during standby. NOPped
+        in firmware_07/08 with no observable change to Toslink Vcc.
+        - Active path: `bl 0x0800C4EC` → `pulse_PB7_reset` at 0x0800CA44
+        - Standby path: `bl 0x0800C48C` at 0x0800A81E → set_PB7_LOW.
+
+  PC15  Auxiliary signal — NOT the Toslink rail gate (firmware_06 confirmed).
+        Written by `transition_state()` at 0x0800A776 (HIGH = active) and
+        0x0800A836 (LOW = standby) via GPIO_WriteBit. Possibly drives an
+        indicator or some adjacent rail. Pin mask = 0x8000.
 
   PF0   ★ DSP reset (active LOW).  Written by `transition_state()`:
         - 0x0800A76C: PF0 = LOW (assert reset, audio inactive)
@@ -54,6 +77,26 @@ work via `is_audio_active()`. Possibilities:
 The pending bench probe (task #10) on pin 13 will resolve this.
 
 
+Notable: PA2 is the actual Toslink Vcc gate
+-------------------------------------------
+Static analysis missed this initially because the call chain is deep:
+  transition_state path 2  →  0x0800A81A: bl 0x08011500 (wrapper)
+                              0x08011500 → bl 0x080103BC (spdif_subsystem_init)
+                              0x080103BC → bl GPIO_WriteBit(GPIOA, 4, 0)
+                                           (mask 0x04 = pin 2 = PA2)
+
+Recipe D (GDB code breakpoint on 0x0800d666 = BRR-write inside GPIO_WriteBit)
+caught this empirically on 2026-06-05. The pre/post ODR snapshots:
+
+  Active state (pre-IR-off):           Standby state (post-IR-off):
+    GPIOA->ODR = 0x84 (PA2,PA7 HIGH)     GPIOA->ODR = 0x80 (PA7 only — PA2 cleared)
+    GPIOB->ODR = 0x4085                   GPIOB->ODR = 0x4005 (PB7 cleared)
+    GPIOC->ODR = 0x8000                   GPIOC->ODR = 0x0    (PC15 cleared)
+    GPIOF->ODR = 0x1                      GPIOF->ODR = 0x0    (PF0 cleared)
+
+Only PA2's drop maps to the Toslink Vcc behavior the user observed.
+
+
 Pin map (all 33 GPIO_Init calls, sorted by port+pin)
 ----------------------------------------------------
 
@@ -61,8 +104,11 @@ Pin map (all 33 GPIO_Init calls, sorted by port+pin)
   ----  ---  ----------  ----  --------  ---  -----------------------------------  ------------
   PA    0    Input       -     Low       -    Button or status input               0x0800F124
   PA    1    Input       -     VeryHigh  -    (?) IR receiver — fast input         0x0800B456
-  PA    2    Output_OD   PU    Low       -    Open-drain output w/ pull-up         0x0801045E
-                                              (possibly software-I²C or 1-wire)
+  PA    2    Output_PP   -     Low       -    ★ SPDIF buffer / Toslink Vcc gate    0x080103EE
+                                              (HIGH = enable rail, LOW = standby)
+                                              (Note: separate init at 0x0801045E
+                                              configures it as Output_OD PU —
+                                              that path may be a fallback / unused)
   PA    3    Input       -     Low       -    ★ SPDIF activity input              0x080104E8 (and 0x08010404, 0x0801048C)
                                                 (read by is_audio_active @ 0x0801041C)
   PA    4         NOT CONFIGURED — see notable section above
@@ -83,7 +129,7 @@ Pin map (all 33 GPIO_Init calls, sorted by port+pin)
   PB    13   ?           PU    Low       ?    (?) Button input — pull-up suggests  0x0800B2D0
                                               external switch to GND
   PB    14   Output_PP   -     Low       -    Push-pull output (LED/control)       0x0800B292
-  PC    15   (via wrapper) Output             ★ Audio rail enable                  (toggled at 0x0800A776/0x0800A836)
+  PC    15   (via wrapper) Output             Auxiliary (NOT audio rail)           (toggled at 0x0800A776/0x0800A836)
   PF    0    Output_PP   -     Med       -    ★ DSP reset (active LOW)             0x0800C984
                                               (PF0 = OSC_IN by default — bar uses HSI
                                               clock, freeing this pin for GPIO)
