@@ -1,0 +1,142 @@
+# Tab-separated symbol file for the Teufel Cinebar One STM32F072 firmware.
+# Format: <address>\t<name>\t<type>\t<comment>
+# Types: FUNC, LABEL (code), DATA (RAM/flash struct), PERIPH (MMIO region)
+# Lines starting with # are ignored.
+# Source: /tmp/firmware/symbols.md  ←  human-readable narrative
+# Loader: /tmp/firmware/ghidra_load_symbols.py  ←  Ghidra Script Manager import
+#
+# Use with Ghidra: open Script Manager → run the companion ghidra_load_symbols.py
+# Or for other tools (IDA, Binary Ninja, custom scripts): parse this file directly.
+
+# === Boot / Reset / C runtime ===
+0x080000C0	__main	FUNC	C runtime init
+0x080000D4	Reset_Handler	FUNC	Calls SystemInit then __main
+0x080000E6	Default_Handler	FUNC	Infinite-loop trap; all unused IRQ vectors point here
+0x080001AC	__scatterload	FUNC	Copies .data initializers flash→RAM
+0x08002EA0	SystemInit	FUNC	RCC/clock setup
+0x080039D4	main	FUNC	Hardware init phase
+0x08010A52	app_main	FUNC	Application init (no PUSH; never returns)
+0x08010AA2	app_main_kernel_start_site	LABEL	bl osKernelStart inside app_main
+
+# === Vector table entries (named handlers only) ===
+0x08000000	g_vector_table	DATA	48-entry Cortex-M0 vector table (192 bytes)
+0x08002400	NMI_Handler	FUNC
+0x080020D8	HardFault_Handler	FUNC
+0x08002DB4	SVC_Handler	FUNC	RTX5 SVC dispatcher
+0x080027C4	PendSV_Handler	FUNC	RTX5 context switch
+0x08002E34	SysTick_Handler	FUNC
+0x08003988	USB_IRQHandler	FUNC	Only application IRQ wired to a real handler
+
+# === RTX5 RTOS wrappers ===
+0x08008C48	osKernelGetState	FUNC	Wrapper (SVC dispatch or direct)
+0x08008C78	osKernelInitialize	FUNC	Wrapper
+0x08008C9C	osKernelStart	FUNC	Wrapper; never returns
+0x08008CC0	osMemoryPoolAlloc	FUNC	Wrapper
+0x08008D74	osMessageQueueGet	FUNC	Wrapper
+0x08008E10	osMessageQueuePut	FUNC	Wrapper — used by all 8 event-loop posters
+0x08008EB8	osMutexNew	FUNC	Wrapper
+0x08009784	osThreadNew	FUNC	Wrapper (one of two)
+0x080097A8	osTimerIsRunning	FUNC	Wrapper
+0x080097CC	osTimerNew	FUNC	Wrapper
+0x080097F0	osTimerStart	FUNC	Wrapper
+0x08009818	osTimerStop	FUNC	Wrapper
+0x08009A40	svcRtxKernelStart_impl	FUNC	Privileged implementation
+0x08009840	svcRtxKernelInitialize_impl	FUNC
+0x08009854	svcRtxKernelGetState_impl	FUNC
+0x08000DF0	__NVIC_EnableIRQ_v1	FUNC	CMSIS standard
+0x0800DE74	__NVIC_EnableIRQ_v2	FUNC	Second copy
+0x0800DE88	NVIC_SetPriority	FUNC	Wrapper
+0x0800DEBC	osEventFlagsNew	FUNC	Wrapper (likely)
+0x0800DFDC	osThreadNew_v2	FUNC	Alt creator
+0x0800E1C4	osThreadNew_v3	FUNC	Alt creator
+0x0800D66C	osKernelGetTickCount	FUNC	Reads osRtxInfo[12] (RTX5 1 ms tick)
+
+# === RTX5 named-object attr structs ===
+0x08011710	LED_Timer_attr	DATA	osTimerAttr_t for "LED Timer"
+0x08011E38	Mutex_vEEPROM_attr	DATA	osMutexAttr_t for "Mutex vEEPROM"
+
+# === Application state machine ===
+0x0800A740	transition_state	FUNC	uint8_t transition_state(uint8_t action); 2 → state 1→3→settles 2; 1 → state 2→4→settles 1
+0x0800A760	transition_state_set_state_3	LABEL	strb r0,#3 → state[0] (intermediate during active entry)
+0x0800A776	transition_state_set_PC15_HIGH	LABEL	bl GPIO_WriteBit(GPIOC, 0x8000, 1) — audio rail ON
+0x0800A76C	transition_state_set_PF0_LOW	LABEL	bl GPIO_WriteBit(GPIOF, 0x0001, 0) — DSP reset asserted
+0x0800A7F0	transition_state_set_PF0_HIGH	LABEL	bl GPIO_WriteBit(GPIOF, 0x0001, 1) — DSP reset released
+0x0800A802	transition_state_set_state_4	LABEL	strb r0,#4 → state[0] (intermediate during standby entry)
+0x0800A828	transition_state_set_PF0_LOW_2	LABEL	bl GPIO_WriteBit(GPIOF, 0x0001, 0) — DSP reset asserted (standby path)
+0x0800A836	transition_state_set_PC15_LOW	LABEL	bl GPIO_WriteBit(GPIOC, 0x8000, 0) — audio rail OFF. NOP'd in firmware_06
+0x0800A83C	transition_state_set_state_1	LABEL	strb r0,#1 → state[0] (final standby settled)
+0x0800ACA4	event_loop_thread	FUNC	Main UI/event RTX thread; entry passed to osThreadNew at app_main init
+0x0800ACAC	event_loop_thread_init2_BL	LABEL	bl 0x800AE78 — HIJACKED by firmware_05 (Goal #1)
+0x0800ACBC	event_loop_thread_queue_get	LABEL	bl osMessageQueueGet (blocking, 25-tick timeout)
+0x0800ACCA	event_loop_thread_auto_standby_check_BL	LABEL	bl 0x08011524 — runs when queue times out (auto-standby decision)
+0x0800ACE4	event_loop_thread_post_type7	LABEL	bl 0x0800ABE4 — posts type-7 event (intermediate auto-standby step)
+0x0800AD12	event_loop_thread_call_transition	LABEL	bl transition_state inside dispatcher
+0x0800AD1C	event_loop_thread_call_notify	LABEL	bl notify(0, retval) — the broadcast Goal #1 needed
+0x0800BBDC	notify	FUNC	int notify(uint8_t channel, uint32_t value) — alloc msg pool, fill {channel, value}, post via osMessageQueuePut
+0x0801041C	is_audio_active	FUNC	uint8_t is_audio_active(void) — returns (GPIOA->IDR >> 3) & 1; reads ★PA3★
+0x08011524	auto_standby_check	FUNC	uint8_t auto_standby_check(void) — checks audio activity vs elapsed time, returns 2 when sustained mode==1 (silent) > 1000 ticks
+0x0800D654	GPIO_ReadPins	FUNC	uint32_t GPIO_ReadPins(GPIO_TypeDef *port, uint32_t pin_mask) — used by is_audio_active
+0x0800D65E	GPIO_WriteBit	FUNC	void GPIO_WriteBit(GPIO_TypeDef *port, uint32_t pin_mask, uint32_t value); used by transition_state
+0x080115F8	vEEPROM_set_default	FUNC	void vEEPROM_set_default(uint16_t key, uint16_t value) — set if not already persisted
+0x0800CDFC	vEEPROM_read	FUNC
+0x0800CEBC	vEEPROM_write	FUNC
+0x0801164C	vEEPROM_module_init	FUNC	Creates Mutex vEEPROM
+0x0800CF94	FLASH_PageErase	FUNC	void FLASH_PageErase(uint32_t page_addr)
+0x0800D340	vEEPROM_erase_loop	FUNC	Iterates pages, calls FLASH_PageErase
+
+# === Event-loop posters (post {byte[0]=type, byte[4]=action} to event_loop queue) ===
+0x0800A9E4	post_event_type6	FUNC	Posts {byte[0]=6, byte[4]=action}; 1 caller at 0x0800AA56
+0x0800AA60	post_event_type3	FUNC	Posts {byte[0]=3, byte[4]=action}; 14 callers
+0x0800AABC	post_event_type2	FUNC	Posts {byte[0]=2, byte[4]=0}; 1 caller at 0x0800BFCC
+0x0800AB00	post_event_type0	FUNC	Posts {byte[0]=0, byte[4]=action}; 15 callers — THIS is how IR-toggle reaches event_loop
+0x0800AB54	post_event_type5	FUNC	Posts {byte[0]=5, byte[4]=action}; 1 caller at 0x0800C2BC
+0x0800ABA0	post_event_type4	FUNC	Posts {byte[0]=4, byte[4]=0}; 1 caller at 0x0800C232
+0x0800ABE4	post_event_type7	FUNC	Posts {byte[0]=7, byte[4]=0_or_1}; 1 caller at 0x0800ACE4 (auto-standby path)
+0x0800AC38	post_event_type1	FUNC	Posts {byte[0]=1, byte[4]=60}; 1 caller at 0x0800AC9A
+
+# === LED subsystem ===
+0x08010068	led_timer_callback	FUNC	RTX timer callback for LED animation
+0x0801002C	set_led_animation	FUNC	void set_led_animation(void *anim_buf)
+0x08010500	request_led_change	FUNC	priority-based filter wrapper
+0x08010220	state_struct_init	FUNC	Initializes g_system_state + creates RTX queues + spawns event_loop_thread
+0x08010224	state_struct_init_initial_state	LABEL	MOVS R1, #1 — sets state[0]=1 (standby) at boot
+0x08011920	led_color_palette	DATA	RGB palette: 0=red, 9=purple
+
+# === GPIO / peripheral helpers ===
+0x0800D4FC	HAL_GPIO_Init	FUNC	void HAL_GPIO_Init(GPIO_TypeDef *port, GPIO_InitTypeDef *init); 33 call sites
+0x0800F160	enable_app_irqs	FUNC	NVIC enable for EXTI0_1, EXTI2_3, EXTI4_15
+0x08010530	create_app_threads	FUNC	Creates 3 RTX threads
+0x080102F4	create_rtx_obj_1	FUNC
+0x080102BC	create_rtx_obj_2	FUNC
+0x08010278	create_rtx_queue_group	FUNC	Creates 3 message queues at g_message_queues_b
+0x08011500	apply_state_change	FUNC	Called from transition_state after state[0] write
+0x08011508	transition_state_finalize	FUNC	Called near end of transition_state path 1
+
+# === Patch shim (firmware_05, Goal #1) ===
+0x0801E800	patch_shim_autoboot_active	FUNC	22-byte shim: orig init 2 + transition_state(2) + notify(0, retval)
+0x0801E801	patch_shim_autoboot_active_thumb	LABEL	Thumb-addressable entry (= entry+1)
+
+# === Flash data structures ===
+0x08003F7A	g_hex_lookup_table	DATA	"0123456789ABCDEF"
+0x08003F8E	g_usb_device_descriptor	DATA	Static USB descriptor template (runtime-overridden)
+0x08007000	vEEPROM_page_A	DATA	2 KB vEEPROM emulation page 1 (active in baseline dump)
+0x08007800	vEEPROM_page_B	DATA	2 KB vEEPROM emulation page 2 (erased = spare)
+0x0800CB74	vEEPROM_constants	DATA	{0x08007000, 0x08007800, 0x0000EEEE}
+0x0801E5B0	RTX_object_names_table	DATA	ASCII strings for named RTX objects
+0x0801E800	patch_space_start	DATA	~6.2 KB free flash for patches
+0x08011588	g_auto_standby_state_ptr_literal	DATA	Literal = 0x20002504 (loaded by auto_standby_check)
+
+# === RAM ===
+0x20002538	osRtxInfo	DATA	RTX5 kernel state struct; [+8]=kernel state byte, [+12]=tick count
+0x200025DC	g_system_state	DATA	Main app state struct; [0]=power state (1=standby, 2=active, 3/4=intermediates), [1]=10, [8]=8
+0x20002504	g_auto_standby_state	DATA	Used by auto_standby_check; [+0]=last decision, [+1]=last mode, [+8]=last change tick
+0x200024E0	g_led_state	DATA	LED state struct; [+12]=LED Timer ID
+0x200026AC	g_led_anim_state	DATA	LED anim state; [+4]=anim buf, [+8]=frame counter
+0x200023A0	g_event_loop_struct	DATA	Holds event_loop's queue handle at [+4]
+0x200023BC	g_notify_struct	DATA	Holds notify's queue handle at [+12], mem pool at [+16]
+0x20002434	g_rtx_obj_1	DATA
+0x2000243C	g_rtx_obj_2	DATA
+0x200024FC	g_vEEPROM_mutex_id	DATA	osMutexId_t for vEEPROM access
+
+# === STM32 system memory ===
+0x1FFFF7AC	STM32_UniqueID	DATA	96-bit factory unique ID (12 bytes)

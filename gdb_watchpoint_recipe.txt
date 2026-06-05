@@ -1,0 +1,418 @@
+Live-Debug Recipes for Teufel Cinebar One
+==========================================
+
+Two recipes here:
+
+  A. IR toggle capture       — used to find Goal #1 patch (COMPLETED ✓)
+  B. Auto-standby trigger    — investigation for Goal #2 (CURRENT TARGET)
+
+Plus:
+
+  C. SPDIF-pin verification  — hardware probe to confirm PA4 is wired right
+
+
+COMMON PREREQUISITES
+====================
+- ST-Link connected to bar's SWD pads
+- OpenOCD installed
+- arm-none-eabi-gdb  (Debian/Ubuntu: `apt install gdb-multiarch` or
+                      `gdb-arm-none-eabi`)
+- arm-none-eabi-objcopy  (same package)
+- The Arduino IR-trigger setup positioned at the bar's IR sensor
+- A SPDIF audio source (TV, optical-out from PC, etc.) connected
+- Logic analyzer or scope (for Recipe C)
+
+
+STEP 0 (RECOMMENDED): build a usable ELF from firmware_01_original-dump.bin
+------------------------------------------------------------
+Without this, GDB still works but shows everything as raw hex. With it,
+addresses align with the flash region and `disas <addr>` works.
+
+    arm-none-eabi-objcopy \
+        -I binary \
+        -O elf32-littlearm \
+        -B arm \
+        --rename-section .data=.text,alloc,readonly,code,contents \
+        --change-section-address .data=0x08000000 \
+        firmware_01_original-dump.bin firmware_01_original-dump.elf
+
+Sanity-check the ELF:
+
+    arm-none-eabi-gdb firmware_01_original-dump.elf
+    (gdb) target remote :3333
+    (gdb) info files          # expect section at 0x08000000 - 0x08020000
+    (gdb) x/4wx 0x08000000    # expect: 0x20001ce8 0x080000d5 0x08002401 0x080020d9
+    (gdb) disas 0x0800d4fc,0x0800d550   # HAL_GPIO_Init should match disasm.txt
+
+
+
+================================================================================
+RECIPE A — IR TOGGLE CAPTURE   (✓ already used; documented for reference)
+================================================================================
+
+Used to identify the transition_state() function, the notify() broadcast call,
+and the state struct at 0x200025DC. Result: firmware_05_autoboot-active-on-power.bin (Goal #1).
+
+Setup (all in GDB, after `target remote :3333` and `monitor reset halt`):
+
+    (gdb) watch *(unsigned char *)0x200025DC      # main state struct byte 0
+    (gdb) info watchpoints                        # confirm "hw watchpoint"
+    (gdb) continue
+
+Trigger Arduino IR. When watchpoint fires, capture:
+
+    (gdb) bt
+    (gdb) info reg
+    (gdb) x/8i $pc-16
+
+Each successive `continue` and re-trigger captures another piece of the cascade.
+
+⚠️  Do NOT watch 0x20002538 (RTX5 kernel struct — context-switch writes flood it)
+⚠️  Max 2 hardware watchpoints (Cortex-M0 DWT limit)
+⚠️  Use `unsigned char/short/int`, not `uint8_t` etc.
+
+
+
+================================================================================
+RECIPE B — AUTO-STANDBY TRIGGER CAPTURE   (★ active investigation)
+================================================================================
+
+Purpose:
+- Find the function that decides "SPDIF gone too long → enter standby"
+- Find the SPDIF-presence monitor (what variable / pin / poll detects audio)
+- Find the timeout constant (whatever counts down to 0)
+
+Once we have that backtrace, we can either:
+- Use the same monitor to detect SPDIF *return* and trigger a wake event
+  (the inverse of what we'll observe in this recipe), OR
+- Identify why no-DSP standby works/doesn't work and plan accordingly
+
+
+STEP B1: Start from a CLEAN BASELINE
+------------------------------------
+Use the unmodified firmware so the auto-standby behavior is exactly as
+originally observed. Goal #1 patches change the boot-state but shouldn't
+affect the auto-standby logic — but it's cleaner to start clean.
+
+Terminal 1 — OpenOCD:
+    openocd -f interface/stlink.cfg -f target/stm32f0x.cfg
+
+Terminal 2 — flash original (skip if firmware_01_original-dump.bin is already there):
+    arm-none-eabi-gdb firmware_01_original-dump.elf
+    (gdb) target remote :3333
+    (gdb) monitor reset halt
+    (gdb) monitor flash write_image erase firmware_01_original-dump.bin 0x08000000
+    (gdb) monitor reset run
+    (gdb) quit
+
+Now re-attach to debug:
+    arm-none-eabi-gdb firmware_01_original-dump.elf
+    (gdb) target remote :3333
+
+
+STEP B2: Wake the bar and start audio
+-------------------------------------
+We need the bar in the ACTIVE state with SPDIF audio playing, so the
+auto-standby countdown is actively running.
+
+    (gdb) monitor reset run
+    (gdb) continue
+
+Then, OUTSIDE GDB, with the Arduino:
+- Trigger the IR power-on (or use the bar's button if accessible)
+- Verify the bar's LED goes purple (active)
+- Start audio from your SPDIF source — confirm audio is playing
+
+
+STEP B3: Set the standby-trigger watchpoint
+-------------------------------------------
+Halt the bar to set the watchpoint without spurious fires:
+
+    (gdb) ^C       (Ctrl-C)
+    (gdb) watch *(unsigned char *)0x200025DC
+    (gdb) info watchpoints     # must show "hw watchpoint"
+
+We're watching the same state[0] byte. In ACTIVE state state[0] = 3. When
+the bar decides to go to standby, transition_state(1) gets called and writes
+state[0] = 4 (transitioning to standby), eventually settling at state[0] = 1
+(standby). So the watchpoint will fire when state changes.
+
+Resume:
+    (gdb) continue
+
+
+STEP B4: STOP the SPDIF audio and wait
+--------------------------------------
+- Stop / pause the audio source on your TV/PC (no input change → no signal)
+- KEEP HANDS OFF — don't touch IR, buttons, USB, or anything that might
+  generate input events. We want auto-standby to be the only trigger.
+
+Wait for the standby timeout. From your earlier observation this is
+"a couple of minutes" — wait at least 5 minutes to be safe.
+
+The watchpoint will fire when state[0] is written. The first fire is what
+we want — that's the line of code that decided to enter standby.
+
+
+STEP B5: Capture the backtrace
+------------------------------
+When the watchpoint fires:
+
+    (gdb) bt                  ★ the function chain we need
+    (gdb) info reg            registers at the moment of the write
+    (gdb) x/16wx $sp          stack contents
+    (gdb) x/8i $pc-16         disassembly around the write
+
+Save all output. The backtrace shows:
+
+  Frame #0: address near 0x0800A800 (transition_state path 1) — the strb
+            that writes state[0] = 4
+  Frame #1: address near 0x0800AD12 (event_loop_thread.call_transition)
+            — the BL transition_state call
+  Frame #2+: the THREAD that posted the "go to standby" event to the queue
+             ★ THIS is the SPDIF-monitor thread we want to find ★
+
+Note the addresses in frames 2+. Cross-reference them with disasm.txt to
+identify the SPDIF-monitor function.
+
+
+STEP B6: Capture additional fires
+---------------------------------
+The single standby-entry causes MULTIPLE state writes (cascading sub-state
+updates). After capturing the first bt, continue:
+
+    (gdb) continue
+    # next fire — another bt
+    (gdb) bt
+    (gdb) continue
+    # etc., maybe 4–8 fires total
+
+The full sequence shows the full standby-entry cascade. Together they map
+the whole auto-standby code path.
+
+
+STEP B7: Refine — find the SPDIF *check* (not just the trigger)
+--------------------------------------------------------------
+Now we know the function that decided "time to go standby". One frame up is
+the function that monitors. Inside it should be:
+  - A read of some variable (the SPDIF activity flag)
+  - A counter increment / compare against threshold (the timeout)
+
+Disassemble that function with:
+    (gdb) disas <addr from frame 2 in your bt>, +0x80
+
+Look for:
+  - `ldrb` / `ldr` from some RAM address (the activity flag)
+  - `cmp` against a constant (the timeout)
+  - The constant gives us the "2 minute" value in whatever unit the firmware uses
+
+Once we know the activity flag's address, we can monitor it for SPDIF
+RETURN to detect the moment audio comes back.
+
+
+
+================================================================================
+RECIPE C — SPDIF PIN VERIFICATION   (hardware probe, no GDB needed)
+================================================================================
+
+Purpose: confirm whether the SPDIF data signal actually lands on PA4 (pin 14)
+of the LQFP48 STM32F072CBT6, or on a different pin we mis-identified.
+
+If PA4 isn't actually wired to SPDIF, that explains why the firmware never
+reads PA4 — and we need to find the real SPDIF pin to plan Goal #2.
+
+Required: logic analyzer (your Saleae clone) or oscilloscope.
+
+Procedure:
+1. With the bar fully on (powered, IR-woken, audio playing from a connected
+   SPDIF source), probe **STM32 pin 14** with the logic analyzer.
+
+2. Expected SPDIF biphase-encoded signal: ~5.6 MHz (at 44.1 kHz audio) or
+   ~6.1 MHz (at 48 kHz). Looks like a continuous toggling square-ish wave
+   We expected this on pin 14 (PA4), but firmware analysis (via decoding
+   `is_audio_active()` at `0x0801041C`) shows it's actually **PA3 (pin 13)**.
+
+   What we now expect on PA3 (pin 13):
+   - NOT raw biphase data — instead a **clean digital level signal** from
+     the SOT-23-5 buffer (HIGH when SPDIF audio active, LOW when silent).
+     The buffer is doing the biphase decode for us.
+   - Firmware polls PA3 via `is_audio_active()` from `auto_standby_check()`.
+
+3. Probe order:
+     Pin 13 = PA3   ★ expected SPDIF-presence level signal (HIGH/LOW)
+     Pin 14 = PA4   originally assumed; should be IDLE (firmware doesn't read it)
+
+   If pin 13 shows the clean HIGH-when-playing / LOW-when-silent signal:
+   confirmed — PA3 is the SPDIF activity input, and the SOT-23-5 chip is
+   doing the SPDIF-presence detection (not just buffering).
+
+   If pin 13 is also idle, try the rest of the GPIOA range:
+     Pin 10 = PA0   Input, Low speed (button candidate)
+     Pin 11 = PA1   Input, VeryHigh speed (IR-pin candidate)
+     Pin 12 = PA2   Output_OD + PU
+     Pin 15 = PA5   AF1 = TIM2_CH1 ETR
+
+4. While you're there, also probe **PC15** with multimeter:
+   - In active state (bar IR'd on): should read ~3.0 V (audio rail ON)
+   - In standby (bar IR'd off): should read ~0 V (audio rail OFF)
+   - This confirms PC15 = audio rail enable (per firmware analysis of
+     `transition_state` GPIO writes).
+
+5. Bonus: capture I²C2 traffic on PB10 (SCL) / PB11 (SDA) with the logic
+   analyzer while audio plays. The DSP transactions will show the DSP's I²C
+   address and command pattern — useful context for Goal #2 Step 2 if we
+   want to keep DSP awake in standby.
+
+
+
+REFERENCE
+=========
+
+Cortex-M0 debug limits:
+  4 hardware breakpoints (FPB)
+  2 hardware data watchpoints (DWT) — exceed and GDB falls back to slow software
+
+Known peripheral registers (STM32F072):
+  0x40005400     I2C1 base                  (used: 1 LDR site)
+  0x40005800     I2C2 base                  (DSP bus — PB11=SDA AF1)
+  0x40005810     I2C2_CR1
+  0x40005828     I2C2_TXDR                  (DSP byte send — quiet in standby)
+  0x4000582C     I2C2_RXDR
+  0x40010400     EXTI base                  (configured but trap-handled if fired)
+  0x40010000     SYSCFG base                (EXTICR — EXTI line→port mapping)
+  0x40021000     RCC base
+  0x40007000     PWR base                   (low-power mode control)
+  0x48000000     GPIOA base (computed via MOVS #9; LSLS #27)
+  0x48000010     GPIOA_IDR                  (PA pin input states — bit 3 = ★PA3 SPDIF★)
+  0x48000400     GPIOB base
+  0x48000800     GPIOC base                 (computed inline; PC15 = ★audio rail enable★)
+  0x48001400     GPIOF base                 (computed inline; PF0 = ★DSP reset (active LOW)★)
+  0x40002000     TIM14 base
+  0x40000000     TIM2 base (instructions, not literal)
+
+Known firmware addresses (key):
+  0x080000d4     Reset_Handler
+  0x08002db5     SVC_Handler (RTX5)
+  0x080027c5     PendSV_Handler (RTX5 ctx switch)
+  0x08002e35     SysTick_Handler
+  0x08003989     USB_IRQHandler
+  0x080000e7     Default_Handler (b .)      ← ALL other IRQ vectors point here
+  0x08008c48     osKernelGetState (wrapper)
+  0x08008d74     osMessageQueueGet (wrapper)
+  0x08008e10     osMessageQueuePut (wrapper)
+  0x0800a740     transition_state           ★ state-change dispatch
+  0x0800a760     state[0]=3 write site      ★ watchpoint trigger for active-entry
+  0x0800a802     state[0]=4 write site      ★ watchpoint trigger for standby-entry
+  0x0800a836     bl PC15-LOW (standby)      ★ NOP'd in firmware_06 (keep rail on)
+  0x0800a776     bl PC15-HIGH (active)      audio rail ON during transition_state
+  0x0800a76c     bl PF0-LOW (DSP reset)     active path
+  0x0800a7f0     bl PF0-HIGH (DSP release)  active path (~50ms after rail-on)
+  0x0800aca4     event_loop_thread          ★ dispatches transition_state
+  0x0800acca     bl auto_standby_check      timeout fallthrough path
+  0x0800ace4     bl post_event_type7        auto-standby trigger
+  0x0800ad12     event_loop call_transition
+  0x0800ad1c     event_loop call_notify
+  0x0800bbdc     notify(channel, value)
+  0x0801041c     is_audio_active            ★ reads (GPIOA->IDR >> 3) & 1 = PA3
+  0x08011524     auto_standby_check         ★ tracks "no audio for 1000+ ticks"
+  0x0800d654     GPIO_ReadPins
+  0x0800d65e     GPIO_WriteBit              used by transition_state for PC15/PF0
+  0x0800d66c     osKernelGetTickCount       returns osRtxInfo[+12]
+  0x0800d4fc     HAL_GPIO_Init
+  0x0801002c     set_led_animation
+  0x08010500     request_led_change (priority filter)
+  0x08010220     state_struct_init
+  0x08010224     MOVS R1, #1 — sets state[0]=1 at boot
+  0x08010a52     app_main
+  0x08010aa2     bl osKernelStart inside app_main
+  0x08011920     LED color palette (0=red, 9=purple)
+
+Event-loop posters (post {byte[0]=type, byte[4]=action} to event_loop queue):
+  0x0800a9e4     post_event_type6  (1 caller)
+  0x0800aa60     post_event_type3  (14 callers)
+  0x0800aabc     post_event_type2  (1 caller — sends {2, 0})
+  0x0800ab00     post_event_type0  (15 callers — IR-toggle path!)
+  0x0800ab54     post_event_type5  (1 caller)
+  0x0800aba0     post_event_type4  (1 caller — sends {4, 0})
+  0x0800abe4     post_event_type7  (1 caller — auto-standby trigger)
+  0x0800ac38     post_event_type1  (1 caller — sends {1, 60})
+
+Known RAM addresses:
+  0x20002538     osRtxInfo (RTX5 kernel)    ⚠ DO NOT WATCH — constant writes
+                                              [+8]=kernel state, [+12]=tick count
+  0x20002504     g_auto_standby_state       [+0]=last decision, [+1]=last mode, [+8]=last tick
+  0x200023A0     g_event_loop_struct        [+4]=event_loop queue handle
+  0x200023BC     g_notify_struct            [+12]=notify queue, [+16]=mem pool
+  0x200024E0     g_led_state                (LED Timer ID at +12)
+  0x200024FC     g_vEEPROM_mutex_id
+  0x200025DC     g_system_state              ★ state[0] = power state byte
+  0x200026AC     g_led_anim_state
+  0x1FFFF7AC     STM32 96-bit unique ID
+
+State[0] values (power state) — CORRECTED:
+  1 = standby (stable, red LED)
+  2 = active (stable, purple LED)
+  3 = transitioning to active (intermediate; written briefly during IR-on)
+  4 = transitioning to standby (intermediate; written briefly during IR-off / auto-standby)
+  Other values seen (0, 5, 6, 7) — sub-states for sleep/error/modes
+
+
+QUICK TROUBLESHOOTING
+=====================
+- "No symbol table is loaded" — use `unsigned char/short/int`, not uint8_t.
+  Or build the ELF in Step 0.
+
+- "watchpoint" without "hw" prefix — GDB is using software watchpoints,
+  which single-step the CPU (bar will freeze). Run:
+      (gdb) set can-use-hw-watchpoints 1
+      (gdb) delete
+      (gdb) watch ...     # re-add
+
+- Watchpoint never fires — the variable isn't where I think it is, OR
+  the trigger event you're trying to capture isn't happening.
+  - For Recipe B: make sure the bar is truly idle (no IR, no USB activity,
+    no buttons, no SPDIF). Anything can reset the standby countdown.
+  - Fallback: set a code breakpoint at 0x0800A7FC (the transition_state
+    path-2 entry, "go to standby"). It WILL fire on any standby transition,
+    including IR-off. Then `info reg`, `bt`.
+
+- Bar reboots/freezes — too many watchpoints (going software), or you
+  halted the CPU mid-transaction. Recover with:
+      (gdb) monitor reset halt
+      (gdb) monitor reset run
+
+- "target not halted" when continuing — the bar was already running. Just
+  Ctrl-C and continue.
+
+- The auto-standby never triggers in Recipe B — could be that something
+  IS keeping the bar alive (USB activity, button rest, IR ghost). Try
+  with USB unplugged and bar in a dark/quiet location.
+
+
+GOAL #2 — WHAT WE EXPECT FROM RECIPE B
+======================================
+
+After Recipe B captures the auto-standby chain, we'll have:
+
+1. The function that calls transition_state(1) for auto-standby
+2. The thread / timer it runs in
+3. The variable it's monitoring (the SPDIF-active flag)
+4. The timeout constant (in whatever unit the firmware uses)
+
+Goal #2 implementation then has two flavors:
+
+  Flavor 1 — STM32 has its own SPDIF detect (no DSP needed):
+    - Find which pin / peripheral the monitor is reading
+    - In our patch, keep the audio rail powered in standby AND poll the
+      same monitor source — when activity returns, post the same wake
+      event the IR handler does
+    - Likely a small patch in patch space, similar in size to Goal #1's shim
+
+  Flavor 2 — STM32 polls DSP for SPDIF status (DSP needed):
+    - Find the I2C-poll pattern the monitor uses
+    - In our patch, keep DSP powered in standby and replicate the poll
+    - Higher standby current cost (DSP draws several mA)
+    - Otherwise same patch structure
+
+Either way, the trigger function we find in Recipe B IS the function we
+want to call from a standby-aware monitor to drive the bar back to active.

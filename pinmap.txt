@@ -1,0 +1,197 @@
+Teufel Cinebar One — STM32F072CBT6 LQFP48 — Firmware-Deduced Pin Map
+======================================================================
+
+Source:   /tmp/firmware/firmware_01_original-dump.bin (128 KB dump, RDP off)
+Method:   Static analysis of 33 calls to HAL_GPIO_Init at 0x0800D4FC,
+          plus live-debug findings from `mylog.txt` (GDB watchpoint session)
+          and `is_audio_active()` decode at 0x0801041C.
+
+GPIO bases are computed inline via `MOVS Rn, #9; LSLS Rn, Rn, #27` (=0x48000000
+for GPIOA) plus port-specific variants — that's why a naive literal scan for
+"0x48000000" finds zero hits despite GPIOA being heavily used.
+
+Notation: AF = STM32 alternate function number. OD = open-drain, PP = push-pull.
+          "?" = parser couldn't resolve from static analysis (call was inside a
+          wrapper that takes pin/mode as arguments).
+          ★ = confirmed role from RE / live debug
+          (?) = inferred but unverified
+
+
+★★ Key pins for this project (verified) ★★
+-------------------------------------------
+
+  PA3   ★ SPDIF activity input.  Read by `is_audio_active()` at 0x0801041C as
+        `(GPIOA->IDR >> 3) & 1`.  HIGH = audio signal present, LOW = silent.
+        Configured as plain Input, Low speed — receives a clean level signal
+        from the SOT-23-5 buffer (NOT the raw biphase data).
+
+  PC15  ★ Audio rail enable.  Written by `transition_state()` at 0x0800A776
+        (HIGH = active) and 0x0800A836 (LOW = standby) via GPIO_WriteBit.
+        Gates the Toslink Vcc rail and DSP power.  Pin mask = 0x8000.
+
+  PF0   ★ DSP reset (active LOW).  Written by `transition_state()`:
+        - 0x0800A76C: PF0 = LOW (assert reset, audio inactive)
+        - 0x0800A7F0: PF0 = HIGH (release reset, audio active, after ~50 ms delay)
+        - 0x0800A828: PF0 = LOW (back to reset during standby entry)
+        Note: PF0 = OSC_IN by default — bar must be using HSI clock to free this pin.
+
+  PB11  ★ I2C2_SDA (AF1).  STM32 ↔ DSP control bus.
+
+  PA1   (?) Strongest IR-receiver candidate — Input + VeryHigh speed (only
+        the IR pulse-decode use case justifies VeryHigh on an input pin).
+        Not yet confirmed via hardware probe.
+
+
+Notable: PA4 is NOT used by firmware
+------------------------------------
+PA4 (pin 14) is NOT configured by any of the 33 `HAL_GPIO_Init` calls. It sits
+in default-input mode after reset and is never read. Earlier hardware tracing
+suggested SPDIF data lands on PA4 — but firmware-side it's PA3 that does the
+work via `is_audio_active()`. Possibilities:
+  a) Hardware trace was misread by one pin (PA3 vs PA4 are adjacent: pins 13/14)
+  b) Board has dual routing — buffer outputs to both PA3 (level) and PA4 (raw),
+     firmware only uses PA3
+The pending bench probe (task #10) on pin 13 will resolve this.
+
+
+Pin map (all 33 GPIO_Init calls, sorted by port+pin)
+----------------------------------------------------
+
+  Port  Pin  Mode        Pull  Speed     AF   Likely function                      GPIO_Init @
+  ----  ---  ----------  ----  --------  ---  -----------------------------------  ------------
+  PA    0    Input       -     Low       -    Button or status input               0x0800F124
+  PA    1    Input       -     VeryHigh  -    (?) IR receiver — fast input         0x0800B456
+  PA    2    Output_OD   PU    Low       -    Open-drain output w/ pull-up         0x0801045E
+                                              (possibly software-I²C or 1-wire)
+  PA    3    Input       -     Low       -    ★ SPDIF activity input              0x080104E8 (and 0x08010404, 0x0801048C)
+                                                (read by is_audio_active @ 0x0801041C)
+  PA    4         NOT CONFIGURED — see notable section above
+  PA    5    AF_OD       -     VeryHigh  AF1  TIM2_CH1_ETR — timer alt function    0x0800EECC
+                                              (use unclear without further trace)
+  PA    6    ?           ?     ?         ?    configured but params not resolved   0x0800FFA4
+  PA    7    ?           ?     ?         ?    configured but params not resolved   0x0800FFB8
+  PA    8    Output_OD   PU    Low       -    Open-drain output w/ pull-up         0x0800B2BC
+                                              (likely I²C-style or PWR-control)
+  PB    0    ?           ?     ?         ?    (likely analog/ADC — see below)      0x0800FF8C
+  PB    1    ?           -     Low       ?    configured but mode not resolved     0x0800FC28
+  PB    2    Output_PP   -     Low       -    Push-pull output (LED/control)       0x0800B280
+  PB    7    Output_OD   -     Low       -    Open-drain — software-I²C-like       0x0800C9E6
+                                              (PB7 is also I2C1_SDA AF1 — could
+                                              be bit-banged I²C, or an OD line)
+  PB    11   AF_OD       -     VeryHigh  AF1  ★ I2C2_SDA (DSP control bus)         0x0800F068
+  PB    12   Output_OD   PU    Low       -    Open-drain w/ pull-up                0x0800B2A6
+  PB    13   ?           PU    Low       ?    (?) Button input — pull-up suggests  0x0800B2D0
+                                              external switch to GND
+  PB    14   Output_PP   -     Low       -    Push-pull output (LED/control)       0x0800B292
+  PC    15   (via wrapper) Output             ★ Audio rail enable                  (toggled at 0x0800A776/0x0800A836)
+  PF    0    Output_PP   -     Med       -    ★ DSP reset (active LOW)             0x0800C984
+                                              (PF0 = OSC_IN by default — bar uses HSI
+                                              clock, freeing this pin for GPIO)
+
+
+Unresolved GPIO_Init calls (10 of 33)
+-------------------------------------
+These are inside wrapper functions where the pin number is a caller argument,
+so static analysis can't pin them without tracing every caller:
+
+  @ 0x0800A5FC — GPIOA Output_PP VeryHigh   (pin computed from caller arg)
+  @ 0x0800A62C — GPIOA Output_PP VeryHigh   (pin computed from caller arg)
+  @ 0x0800CB22 — GPIOC                       (one of these likely configures PC15)
+  @ 0x0800DD70 — GPIOB Analog VeryHigh       (ADC input — likely PB0 or PB1)
+  @ 0x0800DD7C — GPIOB Analog VeryHigh       (ADC input — likely PB0 or PB1)
+  @ 0x0800DDE4 — GPIOB Analog VeryHigh       (ADC input — likely PB0 or PB1)
+  @ 0x0800DDF2 — GPIOB                       (pin/mode computed)
+  @ 0x0800EFD8 — GPIOB VeryHigh              (pin/mode computed)
+  @ 0x0800EFEA — GPIOB VeryHigh              (pin/mode computed)
+  @ 0x0800F1E8 — GPIOB Low                   (pin/mode computed)
+
+The three GPIOB "Analog" calls strongly suggest ADC inputs on PB0/PB1 (the
+only LQFP48 GPIOB pins ADC-capable). The GPIOC wrapper at 0x0800CB22 is
+almost certainly where PC15 is configured (since transition_state writes
+to PC15 via this base).
+
+
+Per-port summary
+----------------
+  PA used:   0, 1, 2, 3,    5, 6, 7, 8    (PA4 unused; PA9-PA15 untouched)
+  PB used:   0, 1, 2,    7,    11, 12, 13, 14  (plus unresolved wrappers)
+  PC used:   PC15 (audio rail enable)
+             + at least one more pin via wrapper (unresolved)
+  PD used:   appears via RCC_AHBENR clock enable but no resolved GPIO_Init call
+  PF used:   PF0 (DSP reset)
+
+
+Boot sequence — application init (app_main)
+-------------------------------------------
+
+`app_main()` is at flash address **0x08010A52** (entry at 0x08010A54, no PUSH
+because it never returns — ends in bkpt + infinite loop after osKernelStart).
+
+Structure (all `BL` calls):
+
+  0x08010A54: bl 0x08008C48     osKernelGetState()
+  0x08010A5A: cmp r0, #0; bne   skip if kernel already initialized
+  0x08010A5C: bl 0x08008C78     osKernelInitialize()
+  0x08010A60: bl 0x0800DE1C     pre-init (flash latency etc.)
+  0x08010A64: bl 0x08010530     ★ create 3 RTX threads
+  0x08010A68: bl 0x0800F160     EXTI IRQ enabler (EXTI0_1, EXTI2_3, EXTI4_15)
+  0x08010A6C: bl 0x0800FC00     GPIOB clock + peripheral subsystem init
+  0x08010A70: bl 0x0800CAF8     GPIOC clock + pin init (probably where PC15 gets set up)
+  0x08010A74: bl 0x0801164C     vEEPROM module init
+  0x08010A78-A82: setup args (R0=0xFF00, R1=0x31)
+  0x08010A7E: bl 0x080115F8     vEEPROM_set_default(0xFF00, 49)
+  0x08010A86: bl 0x080115F8     vEEPROM_set_default(0xFF01, 5100)
+  0x08010A8A: bl 0x08010278     RTX queue group creation (3 queues)
+  0x08010A8E: bl 0x08010220     state struct init + event-loop thread creation
+  0x08010A92: bl 0x080102F4     RTX object — stored at 0x20002434
+  0x08010A96: bl 0x080102BC     RTX objects — stored at 0x2000243C / 0x20002440
+  0x08010A9A: bl 0x08008C48     osKernelGetState() AGAIN
+  0x08010A9E: cmp r0, #1        check if osKernelReady
+  0x08010AA2: bl 0x08008C9C     ★ osKernelStart()
+  0x08010AA6: bkpt 0; b .       should never reach here
+
+
+Goal #1 status — DONE ✓ (firmware_05_autoboot-active-on-power.bin)
+------------------------------------------------------------------
+22-byte shim injected into thread-init path. Patches the `bl 0x0800AE78`
+at 0x0800ACAC to redirect through a shim that calls `transition_state(2)`
++ `notify(0, retval)`. Bar boots straight to active state with IR remote
+behavior preserved. See SOLUTION.md for full details.
+
+
+Goal #2 status — Step 1 pending bench test, Step 2 designed
+-----------------------------------------------------------
+Step 1: `firmware_06_keep-audio-rail-in-standby.bin` — NOP'd the PC15→LOW
+write in standby path, keeps audio rail powered through standby so the
+SPDIF receiver + PA3 monitor stay alive.
+
+Step 2 (designed, not built yet): inject periodic poll of PA3 in standby
+state; when HIGH, post wake event via the same path as IR-on. Likely
+hooks into the event-loop's `auto_standby_check` timeout-fallthrough path
+or extends one of the 8 event-loop posters at 0x0800AA1C-0x0800AC62.
+
+
+Hardware components on the bar (off-chip)
+-----------------------------------------
+  MCU                  STM32F072CBT6 LQFP48
+  SPDIF receiver       3-pin Toslink module (Vcc gated by PC15)
+  SPDIF buffer         SOT-23-5 marked Z045/Z04S — likely a SPDIF
+                       presence detector that outputs a level signal to PA3
+                       (NOT just a Schmitt buffer, since PA3 is Input/Low not VeryHigh)
+  DSP                  Renesas D2-92634-LR (daughter board)
+                       — has its own SPDIFRX0/1 inputs
+                       — reset controlled by PF0 (active LOW)
+                       — controlled via I2C2 (PB11 SDA, PB10 SCL)
+                       — uploaded firmware blob lives at file 0x15620-0x1C1F0
+  Bluetooth            CSR/Qualcomm A64215, sticker "33b17a"
+                       — labelled SPI debug header on daughter board
+  Wireless sub link    SWA12-TX module (FCC NKR-SWA12)
+                       — proprietary 2.4 GHz to paired subwoofer
+
+
+PA9/PA10/PA13/PA14 not in GPIO_Init list
+-----------------------------------------
+These are configured by SWD/USB peripheral hardware automatically:
+  PA9, PA10  = USB DM/DP (USB FS data lines)
+  PA13       = SWDIO
+  PA14       = SWCLK
