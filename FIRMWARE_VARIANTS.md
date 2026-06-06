@@ -29,9 +29,12 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 | `firmware_06_keep-audio-rail-in-standby.bin`  |             4 | ✗ Insufficient | **Goal #2 Step 1 v1**: NOP'd PC15-LOW only. Toslink Vcc still drops to 0.8V in standby — PC15 alone isn't the gate. |
 | `firmware_07_keep-audio-rail-pb7-pc15.bin`  |             8 | ✗ Insufficient | **Goal #2 Step 1 v2**: NOP'd both PB7-LOW + PC15-LOW. Toslink Vcc STILL dropped to 0.8V — Recipe D found the actual killer (PA2). |
 | `firmware_08_keep-audio-rail-pa2-pb7-pc15.bin` | 12 | ✓ Verified (partial) | **Goal #2 Step 1 v3**: NOP of the PA2-LOW path at `0x0800A81A`. Toslink Vcc stays at 3V in standby after one IR-on/IR-off cycle. **Cold-boot quirk**: rail starts at 0.8V (boot init at `0x0800A5D0` sets PA2=LOW); first IR-on brings it up, then it stays. |
-
-(Goal #2 Step 2 — the wake-on-SPDIF polling — will be
-`firmware_09_wake-on-spdif.bin` once we build it, after Step 1 is bench-validated.)
+| `firmware_09_boot-rail-up-in-standby.bin` | 27 | ✗ Failed | **Goal #2 Step 1 v4**: fw_08 + boot shim calling 0x08011508. Rail stayed at 0.8V from cold boot. Disproved theory that PA2 alone is the rail gate. |
+| `firmware_10_boot-rail-up-minimal.bin` | 34 | ✗ Failed | Minimal direct PA2-HIGH shim (skipping 0x08011508 side effects). Verified via GDB: shim ran, PA2 ODR=1, Output_PP mode. Yet Toslink Vcc still 0.8V. Proved PA2 alone is **not sufficient** for rail-up. |
+| `firmware_11_boot-rail-up-pa2-pb7.bin` | 38 | ✗ Failed | PA2 + PB7 (via `0x0800C4EC`). GDB confirmed PB7 HIGH after shim. But `0x0800C4EC` triggered `notify(19, 0)` (audio error) because the embedded I²C check (`0x0800CA70`) fails when DSP isn't running. Bar entered fast-red-blink error state. Rail still 0.8V. Proved PA2+PB7 also insufficient and that calling firmware code outside the natural transition_state context is unsafe. |
+| `firmware_12_autoboot-active-rail-on.bin` | 36 | ✓ Verified | **★ COMBO**: fw_05 (auto-boot to active) + fw_08 (NOPs preserve rail in standby). Bench-verified 2026-06-06: bar auto-boots active (purple), reaches auto-standby in ~9-15 min, rail stays at 3V in standby, IR cycles work. |
+| `firmware_13_combo-5min-standby.bin` | 37 | ✗ Side effect | fw_12 + single-byte patch at 0x1154a (125→42) to reduce silent timer 1000→336 ticks. Standby fires faster (~3 min) but lands in cyan/intermediate state instead of red. Deferred — see [task #29]. |
+| `firmware_14_wake-on-spdif.bin` | 85 | ⏳ Pending test | **★ Goal #2 Step 2**: fw_12 + wake-on-SPDIF polling shim. event_loop's standby idle now also polls PA3 (~22 sec cadence). When audio appears, posts wake event → bar transitions to active automatically. Full Goal #2. |
 
 
 ---
@@ -255,6 +258,199 @@ done
 ```
 
 
+## `firmware_12_autoboot-active-rail-on.bin` — combo fw_05 + fw_08 ⏳ ★
+
+**Purpose**: combine Goal #1 (auto-boot to active state) with Goal #2 Step 1
+(preserve audio rail through standby transitions). Most reliable approach
+because it doesn't try to manually replicate the active-entry GPIO sequence —
+instead the bar follows the OEM's natural path 1 startup at every boot.
+
+**Why this works when fw_09/10/11 didn't**: rail-up isn't gated by PA2 alone,
+or even PA2+PB7. The Recipe-D-era assumption that "PA2 is the rail" was
+incomplete — it's actually PA2 + PB7 + something else (likely DSP-mediated
+or PMIC I²C state). Trying to set rail-up GPIOs manually triggers an error
+LED (`notify(19, 0)` from `0x0800CA70`'s I²C check failing). The only path
+the firmware reliably brings the rail up is the full transition_state path 1.
+
+**Behavior**:
+- AC restore → bar boots straight to active state (LED purple, audio enabled)
+- Either IR-off OR auto-standby (after ~2 min SPDIF silence) → bar standby (LED red)
+- Rail stays at 3V in standby (fw_08 NOPs prevent the LOW writes)
+- IR-on/off cycles work normally
+
+**Changes from baseline (36 bytes)**:
+
+| File offset | Original         | New              | From            | Why                                      |
+| ----------- | ---------------- | ---------------- | --------------- | ---------------------------------------- |
+| `0x0A81A`   | `06 f0 71 fe`    | `00 bf 00 bf`    | fw_08           | NOP standby-path PA2-LOW                 |
+| `0x0A81E`   | `01 f0 35 fe`    | `00 bf 00 bf`    | fw_08           | NOP standby-path PB7-LOW                 |
+| `0x0A836`   | `02 f0 12 ff`    | `00 bf 00 bf`    | fw_08           | NOP standby-path PC15-LOW                |
+| `0x0ACAC`   | `00 f0 e4 f8`    | `13 f0 a8 fd`    | fw_05           | BL redirect to autoboot shim              |
+| `0x1E800`   | `ff ff …` (22b)  | `00 b5 ec f7 39 fb 02 20 eb f7 9a ff 01 46 00 20 ed f7 e4 f9 00 bd` | fw_05 | Shim: orig init + transition_state(2) + notify(0,retval) |
+
+**Status**: ⏳ Pending bench test.
+
+**How to verify after flash**:
+1. Power-cycle bar (AC restore)
+2. Bar should boot to active state — purple LED, output enabled
+3. Either send IR-off OR wait ~2 min for auto-standby
+4. Bar should go to red LED but **Toslink Vcc should stay at 3V**
+5. Subsequent IR-on/off cycles should preserve rail
+6. (Future Step 2): SPDIF reappearance should auto-wake bar
+
+**Apply with**:
+```bash
+cp firmware_05_autoboot-active-on-power.bin firmware_12_autoboot-active-rail-on.bin
+for off in 0x0A81A 0x0A81E 0x0A836; do
+    printf '\x00\xbf\x00\xbf' | \
+        dd of=firmware_12_autoboot-active-rail-on.bin bs=1 seek=$((off)) conv=notrunc
+done
+```
+
+
+## `firmware_14_wake-on-spdif.bin` — Goal #2 Step 2 ⏳ ★
+
+**Purpose**: bar in standby (state[0]==1) auto-wakes when SPDIF audio appears on PA3.
+Builds on fw_12: with the rail kept up in standby (fw_08's NOPs), the SOT-23-5
+SPDIF buffer is alive, so PA3 still reflects audio activity even when LED is red.
+
+**Mechanism**:
+- NOP the `bne 0x800acb4` at `0x0800ACC8` so the BL at `0x0800ACCA` runs in
+  *all* states (not just active).
+- Redirect that BL from `auto_standby_check` (0x08011524) to a new shim at
+  `0x0801E820`.
+- Shim dispatches on `state[0]`:
+  - `state[0]==2` (active) → calls original `auto_standby_check` (preserves auto-standby behavior)
+  - `state[0]==1` (standby) → reads `is_audio_active()` (PA3 IDR). If audio
+    present (returns 0), calls `post_event_type0(2)` to trigger wake transition.
+  - Other states → returns 0 (no action)
+
+Polling cadence is the existing event_loop's `osMessageQueueGet` timeout
+(25 ticks ≈ 22.5 s at the ~1.1 Hz tick rate). Wake latency is up to ~22 s.
+
+**Changes from baseline (85 bytes)**:
+
+| File offset | Original         | New              | From    | Why                                      |
+| ----------- | ---------------- | ---------------- | ------- | ---------------------------------------- |
+| `0x0A81A`   | `06 f0 71 fe`    | `00 bf 00 bf`    | fw_08   | NOP PA2-LOW (standby)                    |
+| `0x0A81E`   | `01 f0 35 fe`    | `00 bf 00 bf`    | fw_08   | NOP PB7-LOW (standby)                    |
+| `0x0A836`   | `02 f0 12 ff`    | `00 bf 00 bf`    | fw_08   | NOP PC15-LOW (standby)                   |
+| `0x0ACAC`   | `00 f0 e4 f8`    | `13 f0 a8 fd`    | fw_05   | BL redirect → autoboot shim              |
+| `0x0ACC8`   | `f4 d1`          | `00 bf`          | **new** | NOP BNE so BL at +0x02 runs in all states |
+| `0x0ACCA`   | `06 f0 2b fc`    | `13 f0 a9 fd`    | **new** | Redirect BL → wake-on-SPDIF shim          |
+| `0x1E800`   | `ff …` (22 b)    | autoboot shim    | fw_05   | (unchanged from fw_12)                    |
+| `0x1E820`   | `ff …` (44 b)    | wake-on-SPDIF shim | **new** | dispatches state[0]                     |
+
+**Shim body at 0x0801E820 (44 bytes)**:
+```
+0x0801E820: push  {r4, lr}
+0x0801E822: ldr   r4, [pc, #36]   ; r4 = &g_system_state (0x200025DC)
+0x0801E824: ldrb  r0, [r4, #0]     ; r0 = state[0]
+0x0801E826: cmp   r0, #2
+0x0801E828: bne   skip_active      ; not active, go to wake check
+0x0801E82A: bl    0x08011524        ; original auto_standby_check
+0x0801E82E: b     done
+
+skip_active:
+0x0801E830: cmp   r0, #1
+0x0801E832: bne   return_zero       ; not standby either → return 0
+0x0801E834: bl    0x0801041C        ; is_audio_active() (PA3 read)
+0x0801E838: cmp   r0, #0
+0x0801E83A: bne   return_zero       ; if 1 (silent), no wake
+0x0801E83C: movs  r0, #2
+0x0801E83E: bl    0x0800AB00        ; post_event_type0(2) → wake
+
+return_zero:
+0x0801E842: movs  r0, #0
+
+done:
+0x0801E844: pop   {r4, pc}
+0x0801E846: nop                      ; alignment
+0x0801E848: .word 0x200025DC          ; literal
+```
+
+**Status**: ⏳ Pending bench test.
+
+**How to verify after flash**:
+1. AC restore → bar boots to active (purple) as in fw_12
+2. **With audio source silent/paused**: IR-off → bar goes to standby (red), Vcc=3V
+3. Wait ~30 sec to confirm bar stays in standby (no spurious wakes)
+4. **Resume audio on the SPDIF source** → bar should auto-wake within ~22 sec, going active (purple)
+5. Stop audio again → bar should auto-standby normally (15 min)
+6. Restart audio → bar auto-wakes again
+
+**Apply with**:
+```bash
+cp firmware_12_autoboot-active-rail-on.bin firmware_14_wake-on-spdif.bin
+printf '\x00\xbf' | dd of=firmware_14_wake-on-spdif.bin bs=1 seek=$((0x0ACC8)) conv=notrunc
+printf '\x13\xf0\xa9\xfd' | dd of=firmware_14_wake-on-spdif.bin bs=1 seek=$((0x0ACCA)) conv=notrunc
+printf '\x10\xb5\x09\x4c\x20\x78\x02\x28\x02\xd1\xf2\xf7\x7b\xfe\x09\xe0\x01\x28\x06\xd1\xf1\xf7\xf2\xfd\x00\x28\x02\xd1\x02\x20\xec\xf7\x5f\xf9\x00\x20\x10\xbd\x00\xbf\xdc\x25\x00\x20' | \
+    dd of=firmware_14_wake-on-spdif.bin bs=1 seek=$((0x1E820)) conv=notrunc
+```
+
+
+## `firmware_09_boot-rail-up-in-standby.bin` — Goal #2 Step 1 v4 ⏳
+
+**Purpose**: keep audio rail powered through standby AND bring it up from cold
+boot, eliminating fw_08's "first IR-on required" quirk. Bar still boots to
+standby (NOT auto-active — for that combine with fw_05's Goal #1 patch).
+
+**How it works**: combines fw_08's NOP at `0x0800A81A` (prevents PA2-LOW in
+standby path) with a boot-time shim that calls `spdif_powerup_wrapper` at
+`0x08011508`. The shim is invoked through the fw_05-style BL redirect at
+`0x0800ACAC`. `spdif_powerup_wrapper` reconfigures PA2 as Output_OD+pull-up,
+pulses it LOW for 50 ms (reset), then HIGH, then waits 500 ms.
+
+**PA2-HIGH chain (located via static analysis after fw_08 verification)**:
+```
+0x0800A7F4 (transition_state path 1, just before state[0]=2)
+  └─ bl 0x08011508 (spdif_powerup_wrapper)
+       ├─ bl 0x08010430  ; reconfig PA2 as Output_OD + Pull-up, write LOW
+       └─ bl 0x0801049C  ; pulse PA2 LOW(50ms) → HIGH, 500ms settle, reconfig PA3
+            └─ 0x080104CE: GPIO_WriteBit(GPIOA, 0x04, 1)  ; ★ PA2 = HIGH
+```
+
+**Changes from baseline (27 bytes)**:
+
+| File offset | Original         | New              | Why                                      |
+| ----------- | ---------------- | ---------------- | ---------------------------------------- |
+| `0x0A81A`   | `06 f0 71 fe`    | `00 bf 00 bf`    | NOP standby-path PA2-LOW (from fw_08)    |
+| `0x0A81E`   | `01 f0 35 fe`    | `00 bf 00 bf`    | NOP PB7-LOW chain (from fw_08, defensive) |
+| `0x0A836`   | `02 f0 12 ff`    | `00 bf 00 bf`    | NOP PC15-LOW (from fw_08, defensive)     |
+| `0x0ACAC`   | `00 f0 e4 f8`    | `13 f0 a8 fd`    | BL redirect: `bl 0x0800AE78` → `bl 0x0801E800` (same as fw_05) |
+| `0x1E800`   | `ff ff …` (12 bytes) | `00 b5 ec f7 39 fb f2 f7 7f fe 00 bd` | Shim: push{lr}; bl orig init 2; bl spdif_powerup; pop{pc} |
+
+**Shim disassembly**:
+```
+0x0801E800: push  {lr}                  ; save thread return
+0x0801E802: bl    0x0800AE78             ; original target (init 2) — preserve
+0x0801E806: bl    0x08011508             ; spdif_powerup → PA2 LOW(50ms) → HIGH
+0x0801E80A: pop   {pc}                   ; return to thread
+```
+
+**Status**: ⏳ Pending bench test.
+
+**How to verify after flash**:
+1. Power-cycle bar (AC restore) — expect ~550 ms extra "thinking" delay before LED settles to red (the PA2 pulse + 500 ms stabilize)
+2. Bar settles in standby (red LED) — NOT active, this is the goal
+3. **Probe Toslink Vcc with multimeter: should read ~3 V from boot (no IR needed!)**
+4. IR-on/IR-off cycles still work normally
+5. Auto-standby (~2 min SPDIF silence) still triggers
+
+**If firmware_09 fails (unlikely)**:
+- The 0x08011508 path may have unintended side effects when called outside transition_state context
+- Fallback would be a more surgical shim that does only the PA2=HIGH write (direct GPIO_WriteBit) without the full spdif_powerup
+
+**Apply with**:
+```bash
+cp firmware_08_keep-audio-rail-pa2-pb7-pc15.bin firmware_09_boot-rail-up-in-standby.bin
+printf '\x00\xb5\xec\xf7\x39\xfb\xf2\xf7\x7f\xfe\x00\xbd' | \
+    dd of=firmware_09_boot-rail-up-in-standby.bin bs=1 seek=$((0x1E800)) conv=notrunc
+printf '\x13\xf0\xa8\xfd' | \
+    dd of=firmware_09_boot-rail-up-in-standby.bin bs=1 seek=$((0x0ACAC)) conv=notrunc
+```
+
+
 ## Cumulative diff summary
 
 ```
@@ -272,19 +468,23 @@ firmware_01_original-dump.bin       (baseline)
     │
     ├─ firmware_07_keep-audio-rail-pb7-pc15.bin         [+8]   Goal #2 Step 1 v2 ✗ insufficient
     │
-    └─ firmware_08_keep-audio-rail-pa2-pb7-pc15.bin     [+12]  Goal #2 Step 1 v3 ✓ verified (partial)
+    ├─ firmware_08_keep-audio-rail-pa2-pb7-pc15.bin     [+12]  Goal #2 Step 1 v3 ✓ verified (partial)
+    │
+    ├─ firmware_09_boot-rail-up-in-standby.bin          [+27]  Goal #2 Step 1 v4 ✗ failed
+    │
+    ├─ firmware_10_boot-rail-up-minimal.bin             [+34]  Goal #2 Step 1 v5 ✗ failed (PA2 alone not sufficient)
+    │
+    ├─ firmware_11_boot-rail-up-pa2-pb7.bin             [+38]  Goal #2 Step 1 v6 ✗ failed (PA2+PB7 not sufficient, error LED)
+    │
+    ├─ firmware_12_autoboot-active-rail-on.bin          [+36]  ★ COMBO fw_05 + fw_08 ✓ verified
+    │
+    ├─ firmware_13_combo-5min-standby.bin               [+37]  Goal #2 Step 1+ ✗ cyan side effect
+    │
+    └─ firmware_14_wake-on-spdif.bin                    [+85]  ★ Goal #2 Step 2 ⏳ pending test
 ```
 
 
 ## Coming next
 
-- `firmware_09_autoboot-plus-rail-on.bin` (recommended next): merge of fw_05
-  (Goal #1: auto-boot to active) + fw_08 (Goal #2 Step 1: keep rail in standby).
-  Active state runs on boot → PA2 goes HIGH → rail up. Subsequent IR-off / auto-
-  standby leaves rail at 3V. Net effect: rail is up from AC restore, no IR needed.
-- `firmware_10_wake-on-spdif.bin` (planned): adds PA3 polling + post wake-event.
-  Requires PA2 to stay HIGH in standby → depends on fw_08 path.
-- `firmware_11_full.bin`: Goal #1 + Step 1 + Step 2 — boots to active, rail
-  always on, also wakes-on-SPDIF if standby is ever entered.
-
-The right combination depends on the user's preference for standby vs always-on.
+- After fw_14 verifies: cleanup pass (rename, archive non-production variants),
+  attempt clean standby-timer reduction (deferred task #29).

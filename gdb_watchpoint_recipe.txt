@@ -586,3 +586,114 @@ Goal #2 implementation then has two flavors:
 
 Either way, the trigger function we find in Recipe B IS the function we
 want to call from a standby-aware monitor to drive the bar back to active.
+
+
+================================================================================
+RECIPE E — DIAGNOSE WHY firmware_10's boot-rail-up FAILS  (★ active)
+================================================================================
+
+Setup: bar has firmware_10 flashed. After cold boot, Toslink Vcc reads 0.8V
+(should be 3V). We need to figure out which of these is happening:
+
+  H1) Our shim never executes the PA2=HIGH write (BL target wrong, etc.)
+  H2) PA2=HIGH writes BUT PA2 is in wrong GPIO mode (Input/Analog/etc.)
+  H3) Something resets PA2 LOW *after* our shim runs
+
+  
+STEP E1: Confirm the shim reaches the PA2=HIGH write (rules out H1)
+--------------------------------------------------------------------
+- Flash firmware_10. Power-cycle. Bar boots to standby (red LED).
+- Connect GDB (`target remote :3333`).
+- Halt: `(gdb) ^C`
+- Set a breakpoint at the BL to GPIO_WriteBit inside our shim:
+    (gdb) b *0x0801e80e
+- `(gdb) monitor reset halt` then `(gdb) continue`
+- If the breakpoint hits during boot:  → H1 ruled out, shim runs OK
+  - Inspect: `(gdb) info reg r0 r1 r2` — expect r0=0x48000000, r1=4, r2=1
+  - If r2 != 1 then encoding is wrong — should not happen since disasm checks out
+- If breakpoint NEVER hits: → H1 confirmed; investigate why shim doesn't run
+  (could be reset loop, exception, etc.)
+
+
+STEP E2: Confirm PA2 actually went HIGH after the BSRR write (rules out H2)
+---------------------------------------------------------------------------
+- With breakpoint at 0x0801e80e (BL to GPIO_WriteBit), single-step PAST the BL:
+    (gdb) finish    # step out of the BL
+    (gdb) x/wx 0x48000014    # read GPIOA->ODR
+- Expect bit 2 (mask 0x04) set in ODR.
+- Also check PA2's actual mode:
+    (gdb) x/wx 0x48000000    # GPIOA->MODER
+    (gdb) x/wx 0x48000004    # GPIOA->OTYPER
+    (gdb) x/wx 0x4800000c    # GPIOA->PUPDR
+- For PA2 we want:
+    MODER bits [5:4]   = 01 (Output)   — anything else = wrong mode, won't drive
+    OTYPER bit 2       = 0 (PP) or 1 (OD; needs PU to read HIGH)
+    PUPDR bits [5:4]   = depends on mode
+- If MODER=01 (Output) and ODR=1 but pin is still 0.8V → hardware problem
+  (something downstream is holding PA2 LOW physically — unlikely)
+- If MODER != 01 → PA2 is in wrong mode; some code reconfigured it
+
+
+STEP E3: Look for PA2 writes AFTER the shim (catches H3)
+--------------------------------------------------------
+This is the key diagnostic. Let the shim run, then watch for late PA2 writes.
+
+- `(gdb) monitor reset halt`
+- Remove old breakpoints: `(gdb) delete`
+- Set a breakpoint at the very END of our shim (the pop {pc}):
+    (gdb) b *0x0801e812
+- Continue. When breakpoint hits, we're right after PA2=HIGH:
+    (gdb) print/x *(unsigned int *)0x48000014    # verify PA2 ODR=1 here
+
+- Now arm the BRR write breakpoint (same trick as Recipe D):
+    (gdb) b *0x0800d666
+    (gdb) commands
+    > silent
+    > printf "BRR-write: port=0x%08x mask=0x%04x lr=0x%08x\n", $r0, $r1, $lr
+    > continue
+    > end
+
+- Also arm BSRR for completeness:
+    (gdb) b *0x0800d662
+    (gdb) commands
+    > silent
+    > printf "BSRR-write: port=0x%08x mask=0x%04x lr=0x%08x\n", $r0, $r1, $lr
+    > continue
+    > end
+
+- Continue and let bar settle to standby (red LED). Don't IR-on.
+    (gdb) continue
+
+You should see a stream of BRR/BSRR writes during boot settling. Watch
+specifically for one with:
+    port=0x48000000 (GPIOA) AND mask=0x04 AND value=0 (BRR=clear)
+That would be the writer that puts PA2 back LOW.
+
+- After bar is fully in standby (LED steady red, no activity): halt
+    (gdb) ^C
+    (gdb) print/x *(unsigned int *)0x48000014   # GPIOA->ODR
+- If bit 2 (mask 0x04) is clear → PA2 went LOW after our shim
+- The last BRR-write with port=GPIOA mask=4 in the log tells us the culprit
+  (use lr to find the calling function in disasm.txt)
+
+
+STEP E4: If NO post-shim PA2-LOW write fired
+--------------------------------------------
+Then PA2 ODR is set, but the pin still measures 0.8V. Two sub-possibilities:
+  a) Mode is wrong (Input/Analog) — checked in E2
+  b) PA2 ODR is being written somewhere OTHER than via GPIO_WriteBit
+     (e.g., direct STR to GPIOA->ODR or BSRR)
+  
+For (b) — add a write watchpoint on ODR directly:
+    (gdb) watch *(unsigned int *)0x48000014
+But note: as we learned in earlier sessions, ODR is updated by hardware in
+response to BSRR/BRR writes. A CPU watchpoint on ODR only catches direct
+CPU writes to ODR. If something writes 0 to ODR directly (instead of via
+BRR), this would catch it.
+
+
+STEP E5: If E3 finds the writer
+-------------------------------
+Cross-reference the lr against disasm.txt. The function calling
+GPIO_WriteBit(GPIOA, 4, 0) at that lr is our next NOP target. Add it to
+the next firmware variant (firmware_11_...).
