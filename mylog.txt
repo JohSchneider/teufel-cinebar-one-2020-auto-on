@@ -1,0 +1,570 @@
+Remote debugging using :3333
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x08010ab6 in ?? ()
+[stm32f0x.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0xc1000000 pc: 0x080000d4 msp: 0x20001ce8
+No symbol table is loaded.  Use the "file" command.
+No symbol table is loaded.  Use the "file" command.
+No symbol table is loaded.  Use the "file" command.
+No symbol table is loaded.  Use the "file" command.
+No symbol table is loaded.  Use the "file" command.
+No symbol table is loaded.  Use the "file" command.
+No watchpoints.
+Continuing.
+target not halted
+target stm32f0x.cpu was not halted when resume was requested
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+r0             0x0                 0
+r1             0x0                 0
+r2             0x0                 0
+r3             0x0                 0
+r4             0x0                 0
+r5             0x0                 0
+r6             0x0                 0
+r7             0x0                 0
+r8             0x0                 0
+r9             0x0                 0
+r10            0x0                 0
+r11            0x0                 0
+r12            0x0                 0
+sp             0x200022d8          0x200022d8
+lr             0x8009759           134256473
+pc             0x8010ab6           0x8010ab6
+Quit
+Reading symbols from firmware_1.elf...
+(No debugging symbols found in firmware_1.elf)
+No symbol table is loaded.  Use the "file" command.
+[stm32f0x.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0xc1000000 pc: 0x080000d4 msp: 0x20001ce8
+No symbol table is loaded.  Use the "file" command.
+quit
+Detaching from program: /home/johannes/teufel-cinebar-one/firmware_1.elf, Remote target
+Ending remote debugging.
+[Inferior 1 (Remote target) detached]
+No symbol table is loaded.  Use the "file" command.
+Hardware watchpoint 1: *(unsigned int *)0x40005828
+Num     Type           Disp Enb Address    What
+1       hw watchpoint  keep y              *(unsigned int *)0x40005828
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+Reading symbols from firmware_1.elf...
+(No debugging symbols found in firmware_1.elf)
+Already logging to mylog.txt.
+Num     Type           Disp Enb Address    What
+1       hw watchpoint  keep y              *(unsigned int *)0x40005828
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+No watchpoints.
+Hardware watchpoint 2: *(unsigned int *)0x200025DC
+Num     Type           Disp Enb Address    What
+2       hw watchpoint  keep y              *(unsigned int *)0x200025DC
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a762 in ?? ()
+#0  0x0800a762 in ?? ()
+#1  0x0800ad16 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+r0             0x3                 3
+r1             0x2                 2
+r2             0x0                 0
+r3             0x200002b0          536871600
+r4             0x200025dc          536880604
+r5             0x48001400          1207964672
+r6             0x8000              32768
+r7             0x48000800          1207961600
+r8             0x0                 0
+r9             0x0                 0
+r10            0x0                 0
+r11            0x0                 0
+r12            0x200               512
+sp             0x20000ad0          0x20000ad0
+lr             0x800ad17           134262039
+pc             0x800a762           0x800a762
+xPSR           0x21000000          553648128
+msp            0x20002c18          0x20002c18
+psp            0x20000ad0          0x20000ad0
+primask        0x0                 0
+basepri        0x0                 0
+faultmask      0x0                 0
+control        0x2                 2
+0x20000ad0:	0x200002b0	0x200025dc	0x200023a0	0x00000000
+0x20000ae0:	0x0001ef77	0x0800ad17	0x20000778	0x00000009
+0x20000af0:	0x00000000	0x08009759	0x20000b48	0x00000051
+0x20000b00:	0x00031301	0x00000000	0x00000000	0x00000000
+   0x800a752:	beq.n	0x800a75a
+   0x800a754:	cmp	r1, #1
+   0x800a756:	beq.n	0x800a7fc
+   0x800a758:	b.n	0x800a83e
+   0x800a75a:	cmp	r0, #1
+   0x800a75c:	bne.n	0x800a83e
+   0x800a75e:	movs	r0, #3
+   0x800a760:	strb	r0, [r4, #0]
+No function contains specified address.
+Dump of assembler code from 0x800a752 to 0x40:
+End of assembler dump.
+Dump of assembler code from 0x20000ad0 to 0x40:
+End of assembler dump.
+Dump of assembler code from 0x20000ad0 to 0x20000b10:
+   0x20000ad0:	lsls	r0, r6, #10
+   0x20000ad2:	movs	r0, #0
+   0x20000ad4:	movs	r5, #220	@ 0xdc
+   0x20000ad6:	movs	r0, #0
+   0x20000ad8:	movs	r3, #160	@ 0xa0
+   0x20000ada:	movs	r0, #0
+   0x20000adc:	movs	r0, r0
+   0x20000ade:	movs	r0, r0
+   0x20000ae0:	vhadd.s<illegal width 64>	d16, d7, d1
+   0x20000ae4:	add	r5, sp, #92	@ 0x5c
+   0x20000ae6:	lsrs	r0, r0, #32
+   0x20000ae8:	lsls	r0, r7, #29
+   0x20000aea:	movs	r0, #0
+   0x20000aec:	movs	r1, r1
+   0x20000aee:	movs	r0, r0
+   0x20000af0:	movs	r0, r0
+   0x20000af2:	movs	r0, r0
+   0x20000af4:	str	r7, [sp, #356]	@ 0x164
+   0x20000af6:	lsrs	r0, r0, #32
+   0x20000af8:	lsrs	r0, r1, #13
+   0x20000afa:	movs	r0, #0
+   0x20000afc:	lsls	r1, r2, #1
+   0x20000afe:	movs	r0, r0
+   0x20000b00:	asrs	r1, r0, #12
+   0x20000b02:	movs	r3, r0
+   0x20000b04:	movs	r0, r0
+   0x20000b06:	movs	r0, r0
+   0x20000b08:	movs	r0, r0
+   0x20000b0a:	movs	r0, r0
+   0x20000b0c:	movs	r0, r0
+   0x20000b0e:	movs	r0, r0
+End of assembler dump.
+   0x800a752:	beq.n	0x800a75a
+   0x800a754:	cmp	r1, #1
+   0x800a756:	beq.n	0x800a7fc
+   0x800a758:	b.n	0x800a83e
+   0x800a75a:	cmp	r0, #1
+   0x800a75c:	bne.n	0x800a83e
+   0x800a75e:	movs	r0, #3
+   0x800a760:	strb	r0, [r4, #0]
+Dump of assembler code from 0x800a752 to 0x800a792:
+   0x0800a752:	beq.n	0x800a75a
+   0x0800a754:	cmp	r1, #1
+   0x0800a756:	beq.n	0x800a7fc
+   0x0800a758:	b.n	0x800a83e
+   0x0800a75a:	cmp	r0, #1
+   0x0800a75c:	bne.n	0x800a83e
+   0x0800a75e:	movs	r0, #3
+   0x0800a760:	strb	r0, [r4, #0]
+=> 0x0800a762:	bl	0x8011500
+   0x0800a766:	movs	r2, #0
+   0x0800a768:	movs	r1, #1
+   0x0800a76a:	mov	r0, r5
+   0x0800a76c:	bl	0x800d65e
+   0x0800a770:	movs	r2, #1
+   0x0800a772:	mov	r1, r6
+   0x0800a774:	mov	r0, r7
+   0x0800a776:	bl	0x800d65e
+   0x0800a77a:	movs	r0, #50	@ 0x32
+   0x0800a77c:	bl	0x800d334
+   0x0800a780:	ldr	r0, [pc, #204]	@ (0x800a850)
+   0x0800a782:	ldr	r2, [r0, #16]
+   0x0800a784:	movs	r1, #1
+   0x0800a786:	lsls	r1, r1, #21
+   0x0800a788:	orrs	r2, r1
+   0x0800a78a:	str	r2, [r0, #16]
+   0x0800a78c:	ldr	r2, [r0, #16]
+   0x0800a78e:	bics	r2, r1
+   0x0800a790:	str	r2, [r0, #16]
+End of assembler dump.
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a6e4 in ?? ()
+#0  0x0800a6e4 in ?? ()
+#1  0x0800d33c in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a83e in ?? ()
+#0  0x0800a83e in ?? ()
+#1  0x080104f0 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800ad18 in ?? ()
+#0  0x0800ad18 in ?? ()
+#1  0x080104f0 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a804 in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a83e in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800ad18 in ?? ()
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+Num     Type           Disp Enb Address    What
+2       hw watchpoint  keep y              *(unsigned int *)0x200025DC
+Hardware watchpoint 3: *(unsigned int *)0x40005810
+Num     Type           Disp Enb Address    What
+3       hw watchpoint  keep y              *(unsigned int *)0x40005810
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+Num     Type           Disp Enb Address    What
+3       hw watchpoint  keep y              *(unsigned int *)0x40005810
+Hardware watchpoint 4: *(unsigned int *)0x200024E0
+Num     Type           Disp Enb Address    What
+4       hw watchpoint  keep y              *(unsigned int *)0x200024E0
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010052 in ?? ()
+#0  0x08010052 in ?? ()
+#1  0x08010038 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010054 in ?? ()
+#0  0x08010054 in ?? ()
+#1  0x08010038 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010052 in ?? ()
+#0  0x08010052 in ?? ()
+#1  0x08010042 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010054 in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010052 in ?? ()
+#0  0x08010052 in ?? ()
+#1  0x08010038 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+r0             0x0                 0
+r1             0x200026ac          536880812
+r2             0x0                 0
+r3             0x800bcfd           134266109
+r4             0x200024e0          536880352
+r5             0x80119c5           134289861
+r6             0x80119c5           134289861
+r7             0x200023e4          536880100
+r8             0x0                 0
+r9             0x0                 0
+r10            0x0                 0
+r11            0x0                 0
+r12            0x80                128
+sp             0x20000670          0x20000670
+lr             0x8010039           134283321
+pc             0x8010052           0x8010052
+xPSR           0x41000000          1090519040
+msp            0x20002c18          0x20002c18
+psp            0x20000670          0x20000670
+primask        0x0                 0
+basepri        0x0                 0
+faultmask      0x0                 0
+control        0x2                 2
+0x20000670:	0x00000000	0x00000001	0x080119c5	0x08010529
+0x20000680:	0x200023bc	0x00000003	0xffffffff	0x0800c369
+0x20000690:	0x00000002	0x200002b0	0x00000000	0x08009759
+0x200006a0:	0x0800bcad	0x01000000	0x200006e8	0x00000041
+   0x8010042:	ldr	r1, [pc, #32]	@ (0x8010064)
+   0x8010044:	movs	r0, #1
+   0x8010046:	strb	r0, [r1, #0]
+   0x8010048:	movs	r0, #0
+   0x801004a:	str	r5, [r1, #4]
+   0x801004c:	strb	r0, [r1, #8]
+   0x801004e:	str	r0, [r4, #8]
+   0x8010050:	strh	r0, [r4, #2]
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010054 in ?? ()
+#0  0x08010054 in ?? ()
+#1  0x08010038 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x0800f716 in ?? ()
+Detaching from program: /home/johannes/teufel-cinebar-one/firmware_1.elf, Remote target
+Ending remote debugging.
+[Inferior 1 (Remote target) detached]
+Hardware watchpoint 1: *(unsigned char *)0x200025DC
+Num     Type           Disp Enb Address    What
+1       hw watchpoint  keep y              *(unsigned char *)0x200025DC
+Continuing.
+Warning:
+Could not insert hardware watchpoint 1.
+Could not insert hardware breakpoints:
+You may have requested too many hardware breakpoints/watchpoints.
+
+Command aborted.
+Continuing.
+Warning:
+Could not insert hardware watchpoint 1.
+Could not insert hardware breakpoints:
+You may have requested too many hardware breakpoints/watchpoints.
+
+Command aborted.
+Hardware watchpoint 2: *(unsigned char *)0x200025DC
+Continuing.
+Warning:
+Could not insert hardware watchpoint 2.
+Could not insert hardware breakpoints:
+You may have requested too many hardware breakpoints/watchpoints.
+
+Command aborted.
+Symbols from "/home/johannes/teufel-cinebar-one/firmware_1.elf".
+Remote target using gdb-specific protocol:
+	`/home/johannes/teufel-cinebar-one/firmware_1.elf', file type elf32-littlearm.
+	Entry point: 0x0
+	0x00000000 - 0x00020000 is .data
+	While running this, GDB does not access memory from...
+Local exec file:
+	`/home/johannes/teufel-cinebar-one/firmware_1.elf', file type elf32-littlearm.
+	Entry point: 0x0
+	0x00000000 - 0x00020000 is .data
+[stm32f0x.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0xc1000000 pc: 0x080000d4 msp: 0x20001ce8
+Hardware watchpoint 3: *(unsigned char *)0x200025DC
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010a3e in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x08010228 in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a762 in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a83e in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800ad18 in ?? ()
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a804 in ?? ()
+#0  0x0800a804 in ?? ()
+#1  0x0800ad16 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+r0             0x4                 4
+r1             0x1                 1
+r2             0x0                 0
+r3             0x200002b8          536871608
+r4             0x200025dc          536880604
+r5             0x48001400          1207964672
+r6             0x8000              32768
+r7             0x48000800          1207961600
+r8             0x0                 0
+r9             0x0                 0
+r10            0x0                 0
+r11            0x0                 0
+r12            0x8                 8
+sp             0x20000ad0          0x20000ad0
+lr             0x800ad17           134262039
+pc             0x800a804           0x800a804
+xPSR           0x21000000          553648128
+msp            0x20002c18          0x20002c18
+psp            0x20000ad0          0x20000ad0
+primask        0x0                 0
+basepri        0x0                 0
+faultmask      0x0                 0
+control        0x2                 2
+0x20000ad0:	0x200002b8	0x200025dc	0x200023a0	0x00000000
+0x20000ae0:	0x00004193	0x0800ad17	0x20000778	0x00000008
+0x20000af0:	0x00000000	0x08009759	0x20000b48	0x00000051
+0x20000b00:	0x00031301	0x00000000	0x00000000	0x00000000
+   0x800a7f4:	bl	0x8011508
+   0x800a7f8:	movs	r0, #2
+   0x800a7fa:	b.n	0x800a83c
+   0x800a7fc:	cmp	r0, #2
+   0x800a7fe:	bne.n	0x800a83e
+   0x800a800:	movs	r0, #4
+   0x800a802:	strb	r0, [r4, #0]
+=> 0x800a804:	movs	r0, #0
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800a83e in ?? ()
+#0  0x0800a83e in ?? ()
+#1  0x0800a83a in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+r0             0x1                 1
+r1             0x8000              32768
+r2             0x0                 0
+r3             0x200002b8          536871608
+r4             0x200025dc          536880604
+r5             0x48001400          1207964672
+r6             0x8000              32768
+r7             0x48000800          1207961600
+r8             0x0                 0
+r9             0x0                 0
+r10            0x0                 0
+r11            0x0                 0
+r12            0x200               512
+sp             0x20000ad0          0x20000ad0
+lr             0x800a83b           134260795
+pc             0x800a83e           0x800a83e
+xPSR           0x21000000          553648128
+msp            0x20002c18          0x20002c18
+psp            0x20000ad0          0x20000ad0
+primask        0x0                 0
+basepri        0x0                 0
+faultmask      0x0                 0
+control        0x2                 2
+0x20000ad0:	0x200002b8	0x200025dc	0x200023a0	0x00000000
+0x20000ae0:	0x00004193	0x0800ad17	0x20000778	0x00000008
+0x20000af0:	0x00000000	0x08009759	0x20000b48	0x00000051
+0x20000b00:	0x00031301	0x00000000	0x00000000	0x00000000
+   0x800a82e:			@ <UNDEFINED> instruction: 0xfd442200
+   0x800a832:	mov	r1, r6
+   0x800a834:	mov	r0, r7
+   0x800a836:	bl	0x800d65e
+   0x800a83a:	movs	r0, #1
+   0x800a83c:	strb	r0, [r4, #0]
+=> 0x800a83e:	uxtb	r0, r0
+   0x800a840:	pop	{r3, r4, r5, r6, r7, pc}
+Continuing.
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800ad18 in ?? ()
+#0  0x0800ad18 in ?? ()
+#1  0x0800a83a in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+r0             0x1                 1
+r1             0x8000              32768
+r2             0x0                 0
+r3             0x200002b8          536871608
+r4             0x200025dc          536880604
+r5             0x200023a0          536880032
+r6             0x0                 0
+r7             0x4193              16787
+r8             0x0                 0
+r9             0x0                 0
+r10            0x0                 0
+r11            0x0                 0
+r12            0x200               512
+sp             0x20000ae8          0x20000ae8
+lr             0x800a83b           134260795
+pc             0x800ad18           0x800ad18
+xPSR           0x21000000          553648128
+msp            0x20002c18          0x20002c18
+psp            0x20000ae8          0x20000ae8
+primask        0x0                 0
+basepri        0x0                 0
+faultmask      0x0                 0
+control        0x2                 2
+   0x800ad08:	movs	r0, #0
+   0x800ad0a:	bl	0x800bbdc
+   0x800ad0e:	ldr	r0, [sp, #0]
+   0x800ad10:	ldrb	r0, [r0, #4]
+   0x800ad12:	bl	0x800a740
+   0x800ad16:	strb	r0, [r4, #0]
+=> 0x800ad18:	mov	r1, r0
+   0x800ad1a:	movs	r0, #0
+0x20000ae8:	0x20000778	0x00000008	0x00000000	0x08009759
+0x20000af8:	0x20000b48	0x00000051	0x00031301	0x00000000
+0x20000b08:	0x00000000	0x00000000	0x200011b0	0x00000000
+0x20000b18:	0x00000000	0x00000013	0x00fd1818	0x00000000
+Continuing.
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+Hardware watchpoint 1: *(unsigned int *)0x48000414
+Hardware watchpoint 2: *(unsigned int *)0x48000014
+Num     Type           Disp Enb Address    What
+1       hw watchpoint  keep y              *(unsigned int *)0x48000414
+2       hw watchpoint  keep y              *(unsigned int *)0x48000014
+$1 = 0x4085
+$2 = 0x84
+$3 = 0x8000
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+Num     Type           Disp Enb Address    What
+1       hw watchpoint  keep y              *(unsigned int *)0x48000414
+2       hw watchpoint  keep y              *(unsigned int *)0x48000014
+Continuing.
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+No watchpoints.
+Breakpoint 3 at 0x800d666
+Note: automatically using hardware breakpoints for read-only addresses.
+Type commands for breakpoint(s) 3, one per line.
+End with a line saying just "end".
+Breakpoint 4 at 0x800d662
+Type commands for breakpoint(s) 4, one per line.
+End with a line saying just "end".
+$4 = 0x4085
+$5 = 0x84
+$6 = 0x8000
+$7 = 0x1
+Continuing.
+BRR-write: port=0x48000000 mask=0x0004 lr=0x080103e1
+#0  0x0800d666 in ?? ()
+#1  0x080103e0 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+halted: PC: 0x0800d668
+BRR-write: port=0x48000400 mask=0x0080 lr=0x0800c9ad
+#0  0x0800d666 in ?? ()
+#1  0x0800c9ac in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+halted: PC: 0x0800d668
+BRR-write: port=0x48001400 mask=0x0001 lr=0x0800a82d
+#0  0x0800d666 in ?? ()
+#1  0x0800a82c in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+halted: PC: 0x0800d668
+BRR-write: port=0x48000800 mask=0x8000 lr=0x0800a83b
+#0  0x0800d666 in ?? ()
+#1  0x0800a83a in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+halted: PC: 0x0800d668
+
+Program received signal SIGINT, Interrupt.
+0x08010ab6 in ?? ()
+#0  0x08010ab6 in ?? ()
+#1  0x08009758 in ?? ()
+Backtrace stopped: previous frame identical to this frame (corrupt stack?)
+$8 = 0x4005
+$9 = 0x80
+$10 = 0x0
+$11 = 0x0
+$12 = 0x0
+hellohello

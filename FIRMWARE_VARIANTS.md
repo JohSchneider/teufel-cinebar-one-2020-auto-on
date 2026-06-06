@@ -29,9 +29,26 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 | `firmware_08_keep-audio-rail-pa2-pb7-pc15.bin` | 12 | ✓ Verified (cold-boot quirk) | Goal #2 Step 1 v3: NOP'd PA2+PB7+PC15. Rail stays at 3V after IR-on/off cycle; needs first IR-on to come up at cold boot. |
 | `firmware_12_autoboot-active-rail-on.bin` | 36 | ★ ✓ Production (Goal #2 Step 1) | fw_05 + fw_08 combo. Bar auto-boots active, rail stays at 3V across standby cycles. **No cold-boot quirk** — active runs first, then rail is already up when standby happens. |
 | `firmware_13_combo-5min-standby.bin` | 37 | ⏸ Deferred | fw_12 + single-byte timeout reduction. Reaches standby in ~3 min but lands in cyan intermediate state instead of red. Deferred until gating mechanism understood. |
-| `firmware_17_wake-on-spdif.bin` | 129 | ⏳ Pending test | **★ Goal #2 Step 2 candidate.** fw_12 + NOP PF0=LOW (DSP stays alive → PA4 reflects SPDIF) + polling shim with multi-sample debounce + silence-seen gate. Polls PA4 in event_loop's standby idle. |
+| `firmware_22_wake-on-spdif.bin` | 86 | ★ ✓ Production (Goal #1 + Goal #2 complete) | Same design as fw_21 but with **2-byte fix to LDR offsets** in the shim. fw_21 had off-by-one in `ldr r5` and `ldr r6` PC-relative offsets — r5 loaded state struct instead of autostandby, r6 loaded autostandby instead of GPIOA->IDR. Bug discovered via GDB confirming shim invocation but silence_seen at 0x20002506 never updated; manual `post_event_type0(2)` via PC manipulation wake the bar, isolating the issue to the shim's reads/writes. Bench-verified 2026-06-06: AC restore auto-boots active; muted source auto-suspends in ~15 min; unmute wakes within ~25 ms. **IR remote no longer needed in normal use.** |
 
 ---
+
+## Goal #2 Step 2 iteration history (fw_14 through fw_21)
+
+We iterated quite a bit on Step 2. Key learnings (worth recording so future-you doesn't repeat them):
+
+- **fw_14** (level-triggered PA3 polling): bar wake-looped because PA3 always reads LOW in active-state with Toslink connected. Fundamental misread of PA3's semantics.
+- **fw_15/16/17/18** attempts: tried various NOPs (PF0, I²C1) and edge-triggering. The NOP of BNE at `0x0ACC8` (intended to expose the wake-check BL in standby) caused an IR-off error because it newly exposed the post-shim periodic-timer code (state[8]=10 write + conditional BLs) to standby state, triggering some downstream side effect.
+- **fw_19** (wrap osMessageQueueGet at `0x0ACBC` instead of the BNE NOP approach): cleared the IR-off error. But "silent = all 16 PA4 samples LOW" was too strict — muted source produces all-HIGH PA4 (Toslink receiver idle), so silence_seen never flipped.
+- **fw_20** (added active-state auto-suspend via `last_toggle_tick`): tick-rate misestimate (we'd assumed ~1.1 Hz; it's actually 1 kHz / 1ms tick), making auto-suspend threshold 1 second instead of 15 min. PA3 also read anomalously, possibly because we touched RAM at offset +4..+7 of the autostandby struct that may not be unused. Reverted.
+- **fw_21**: fw_19's wrap-around-osMessageQueueGet design + monotone detection. But had off-by-one in LDR PC-relative offsets — r5/r6 each loaded the wrong literal. Shim was invoked but read/wrote wrong memory addresses, silently failing. Discovered via GDB: shim entry BP fired correctly, but silence_seen at 0x20002506 never updated, and manual `post_event_type0(2)` via PC manipulation DID wake the bar (confirming wake path works, isolating the issue to the shim's logic).
+- **fw_22**: 2-byte fix on fw_21's LDR offsets (file offsets 0x1E82A and 0x1E82C, `0x0F` → `0x10`). All other shim logic unchanged.
+
+Truth tables (post-2026-06-06):
+- **PA4**: directly reflects Toslink fiber state. Toggles ~50/100 when fiber transmits data; stuck HIGH when fiber dark (mute); stuck LOW when receiver not driven (cable unplugged).
+- **PA3**: reflects the SOT-23-5 chip's "carrier detected" state with significant hysteresis (some minutes). Cable unplugged → PA3 quickly HIGH. Fiber goes dark but cable still in → PA3 eventually transitions HIGH after the chip's internal silence-detect timer expires.
+- **Tick rate**: ~1 kHz (RTX5 default 1ms ticks). The "15 min" auto-standby observation actually comes from the SOT-23-5 chip's hysteresis (not a 1000-tick firmware threshold). The `auto_standby_check`'s 1000-tick threshold fires within 1 sec once PA3 has been HIGH, but the chip's hysteresis dominates total observed delay.
+
 
 ## Production binaries (detailed)
 
@@ -90,9 +107,9 @@ for off in 0x0A81A 0x0A81E 0x0A836; do
 done
 ```
 
-### `firmware_17_wake-on-spdif.bin` — Goal #2 Step 2 candidate (⏳ pending bench test)
+### `firmware_22_wake-on-spdif.bin` — Goal #2 Step 2 candidate (⏳ pending bench test)
 
-**Behavior** (intended): everything fw_12 does, plus the bar auto-wakes when SPDIF audio appears in standby. Audio resumption → bar transitions to active within ~22 sec (one event_loop poll cycle). IR-off while audio is still playing does **not** cause a wake-loop because the wake gate requires observing silence first.
+**Behavior** (intended): everything fw_12 does, plus the bar auto-wakes when the Toslink fiber returns from a "dark" state in standby (audio resumes or source unmutes or cable plugged back in). Wake fires within ~22 sec of fiber lighting back up (one event_loop poll cycle). IR-off while audio is still playing does **not** cause a wake-loop because the wake gate requires observing fiber-dark first.
 
 **Mechanism**:
 1. **NOP at `0x0A828`** (4 bytes) — prevents PF0=LOW in standby path, keeping DSP alive. With DSP alive, the Toslink module driver keeps signaling PA4 with raw SPDIF data. Without this, PA4 reads stuck-LOW in standby and there's nothing to detect (verified via Phase D2 bench session 2026-06-06).

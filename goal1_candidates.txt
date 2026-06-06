@@ -1,0 +1,194 @@
+Goal #1 (auto-on at AC power) — candidate-by-candidate analysis
+================================================================
+
+Source: app_main() at 0x08010A52 makes these `bl` calls between
+osKernelInitialize() and osKernelStart(). We want to find which (if any)
+sets the initial power state to "standby". The candidates, in call order:
+
+
+[1]  0x0800DE1C   pre-init (right BEFORE thread creator)
+---------------------------------------------------------
+- 11 instructions, very small wrapper.
+- Touches the FLASH_BASE peripheral (writes to FLASH_ACR with OR'd bit, sets r0=3).
+- Calls 0x800DE3C and 0x800DE5E (likely flash-prefetch / wait-state config).
+- VERDICT: **flash latency / cache setup**. Required for correct clock-up.
+- *DO NOT PATCH*. Skipping this will probably make the chip misbehave (wait
+  states wrong for the boot clock speed).
+
+
+[2]  0x08010530   THREAD CREATOR — already characterized
+---------------------------------------------------------
+- Creates 3 RTX objects via 0x800E1C4, 0x800DFDC, 0x800DEBC.
+- bkpt if any fails.
+- *DO NOT PATCH*. Without these threads the firmware doesn't work at all.
+
+
+[3]  0x0800F160   EXTI IRQ enabler
+---------------------------------------------------------
+- Enables EXTI0_1, EXTI2_3, EXTI4_15 IRQs in NVIC + GPIO pin setup.
+- *Probably safe to patch* (those handlers are infinite-loop traps so the
+  IRQs must never fire anyway — see earlier finding) but not the goal here.
+
+
+[4]  0x0800FC00   GPIOB clock + GPIO pin init
+---------------------------------------------------------
+- 55 instructions.
+- Enables RCC_AHBENR bit 18 (GPIOB clock).
+- Calls GPIO_Init (0x800D4FC) once.
+- Then calls 0x800E644, 0x800CF50 (x3), 0x800E5FC, 0x800E67A — peripheral setup.
+- Writes to RAM[0x2000266C] (a moderate-traffic state addr).
+- VERDICT: **GPIOB + some peripheral subsystem init**, possibly USART/SPI/etc.
+- *Medium risk to patch* — could break the subsystem.
+
+
+[5]  0x0800CAF8   GPIOC clock + GPIO pin init
+---------------------------------------------------------
+- 24 instructions.
+- Enables RCC_AHBENR bit 19 (GPIOC clock).
+- Calls GPIO_Init once with the literal-loaded base (= GPIOC).
+- VERDICT: **GPIOC clock + a single pin setup**. Very compact.
+- *Medium risk to patch* — disables some GPIO function (maybe a status LED on PC?).
+
+
+[6]  0x0801164C   vEEPROM module init
+---------------------------------------------------------
+- 11 instructions.
+- Checks if vEEPROM mutex is already created at RAM[0x200024FC], if not creates
+  it via 0x08008EB8 using attr struct at 0x08011E38 ("Mutex vEEPROM").
+- Calls 0x800D470, 0x800CBDC, 0x800D3E0 (vEEPROM module sub-inits).
+- VERDICT: **vEEPROM mutex + module init**. Required if firmware reads any
+  persisted setting later (volume, source, etc.).
+- *Skipping this could cause crashes or vEEPROM-related code to deadlock*.
+  Do not patch.
+
+
+[7]  0x080115F8   vEEPROM_set_default(key, value) — called twice
+---------------------------------------------------------
+- 32 instructions, takes (R0=key, R1=value).
+- Calls osKernelGetState(), then acquires the vEEPROM mutex, calls 0x800CDFC
+  (vEEPROM read), compares result against R6 (=R1 value), and if different
+  calls 0x800CEBC (vEEPROM write). Then releases the mutex.
+- This is `vEEPROM_set_default(key, default_value)` — if a key isn't yet
+  persisted, save the default value.
+
+  Call 1: `set_default(key=0xFF00, value=49)`
+  Call 2: `set_default(key=0xFF01, value=5100)`
+
+  Keys 0xFF00 and 0xFF01 are adjacent — likely a contiguous config block.
+  Value 49 (one possibility): default volume out of some range.
+  Value 5100 (one possibility): timeout in some unit (5100 doesn't match
+  the observed ~2-min auto-standby in any clean unit).
+
+- VERDICT: **persistent-config defaults setter**. Skipping it means the
+  bar uses whatever's already in vEEPROM (or 0xFF if never written).
+- *Safe to NOP* — worst case is the bar boots with weird defaults.
+- *Low chance of being the standby trigger* — vEEPROM defaults are usually
+  passive (only used when feature code reads them), not state actuators.
+
+
+[8]  0x08010278   creates 3 RTX queues at RAM[0x200023BC+8/12/16]
+---------------------------------------------------------
+- 27 instructions.
+- Calls 0x8008DEC (osMemoryAlloc?), 0x8008D50 (osMemoryAlloc?), 0x8009784
+  (osMessageQueueNew).
+- Stores 3 returned IDs at RAM[0x200023C4], [0x200023C8], [0x200023CC].
+- Has `b .` infinite-loops as error paths (bkpt-style).
+- VERDICT: **inter-thread queue creation**. Required for threads to talk to
+  each other.
+- *Do not patch* — threads will deadlock without queues.
+
+
+[9]  0x08010220   ★ INITIAL STATE STRUCT INIT + 3 RTX queues ★
+---------------------------------------------------------
+- 34 instructions.
+- **First half initializes a state struct in RAM at 0x200025DC** (which had
+  26 LDR refs — one of the most-trafficked state addresses in the firmware):
+    byte[0]  = 1        ← could be initial source/state index
+    byte[1]  = 10       ← could be initial volume/count
+    byte[2]  = 0
+    byte[3]  = 0
+    byte[4..7] = 0
+    byte[8]  = 8        ← could be a separate "state" byte
+    word[12] = 0
+    halfword[16] = 0
+- **Second half** creates 3 RTX message queues like [8] above, stored at
+  RAM[0x200023A0]+4, +8 (via 0x8008DEC, 0x8008D50, 0x8009784).
+
+- VERDICT: **This is the strongest single candidate.** A state struct at
+  a heavily-trafficked RAM address gets its initial bytes set right here.
+
+- *Caveat*: NOPping the whole call also kills the 3 queue creations →
+  threads will deadlock. The patch needs to be surgical:
+    - Either modify byte[0]=1 or byte[8]=8 to a different value (one-byte
+      change to the `MOVS #1` or `MOVS #8` instruction's immediate field).
+    - Or NOP just the byte-write instructions, leaving the queue setup.
+
+- *Surgical patch site (byte[0])*: file offset = (0x08010224 - 0x08000000) = 0x10224.
+  Instruction at 0x08010224: `MOVS R1, #1` encoded as 2 bytes `01 21`.
+  Change `01` → other value (e.g. `00`, `02`, `09`).
+  (R1=0 might mean "active"; R1=2 might pick another source/state.)
+
+- *Surgical patch site (byte[8])*: file offset 0x1023A.
+  Instruction at 0x0801023A: `MOVS R2, #8` encoded as `08 22`.
+  Change `08` → e.g. `00` (R2=0 might mean "active" if 8 was "standby").
+
+
+PRIORITIZATION FOR TRIAL & ERROR
+================================
+
+These are ordered from "most likely to fix Goal #1 with one byte change" to
+"least likely / most risky". Try in this order; reflash and observe behavior
+after each. Roll back to `firmware_01_original-dump.bin` between attempts.
+
+A. **0x08010220 byte[0] change** (file 0x10224)
+   - Change byte 0x10224 from `01` to `00`. (`MOVS R1, #1` → `MOVS R1, #0`)
+   - Observe: LED color at boot, audio output, button behavior.
+   - If bar boots active and works fine → DONE.
+   - If bar boots active but missing a feature → byte[0] is "default source",
+     try different values (try `09` next).
+   - If bar misbehaves → revert, try B.
+
+B. **0x08010220 byte[8] change** (file 0x1023A)
+   - Change byte 0x1023A from `08` to `00`.
+   - Observe behavior.
+
+C. **NOP first 0x080115F8 call** (4 bytes at file 0x10A7E)
+   - Replace 4 bytes at 0x10A7E with `00 BF 00 BF` (two NOP instructions).
+   - Observe: maybe loses default volume/source; bar should still work.
+   - This rules out "default value being applied makes bar enter standby".
+
+D. **NOP second 0x080115F8 call** (4 bytes at file 0x10A86)
+   - Same idea, different config field.
+
+E. **NOP 0x0800FC00 call from app_main** (file 0x10A6C)
+   - Higher risk — might lose GPIOB peripheral function.
+   - Replace 4 bytes at 0x10A6C with `00 BF 00 BF`.
+
+F. **NOP 0x0800CAF8 call from app_main** (file 0x10A70)
+   - Same risk profile as E.
+
+G. **NOP 0x08010A8A or 0x08010A8E or 0x08010A92 or 0x08010A96**
+   - The four small `bl 0x08010278/0x08010220/0x080102F4/0x080102BC` calls.
+   - 0x08010220 is the state init we want — don't NOP its `bl` (would lose
+     RTX queues), but a partial patch is the surgical approach above.
+   - 0x080102F4 / 0x080102BC create more RTX queues — do not NOP.
+
+
+Notes on patching mechanics
+---------------------------
+- Each patch is just a byte change in `firmware_01_original-dump.bin` followed by reflash.
+  Same approach as the working DEADBEEF verification.
+- NOP for Thumb-1: `BF 00` (2 bytes). A 32-bit Thumb-2 BL is 4 bytes —
+  to NOP a BL, use two 16-bit NOPs: `BF 00 BF 00` (or some toolchains
+  prefer `00 BF 00 BF` — verify endianness with `objdump` after patching).
+- After each patch, verify it's the change you intended with
+  `xxd -s <offset> -l 16 firmware_02_swd-write-test.bin`.
+- Keep `firmware_01_original-dump.bin` as the rollback baseline.
+
+Expected fast-loop times per attempt:
+  - Apply patch:   < 1 minute (printf | dd)
+  - Reflash:       ~ 5 seconds (openocd program)
+  - Observe + roll back if needed:  ~ 30 seconds
+  - Total per attempt: ~ 2 minutes
+
+So all 7 attempts above can be exhausted in ~15-20 minutes of bench work.
