@@ -90,7 +90,7 @@ Confidence legend:
 | Address       | Conf | Symbol                            | Signature / notes                           |
 | ------------- | ---- | --------------------------------- | ------------------------------------------- |
 | `0x0800A740`  | ★★★  | `transition_state`                | `uint8_t transition_state(uint8_t action)`. **The power-toggle dispatch.** action=2 from current=1 → intermediate state 3, settles at state 2 (active); action=1 from current=2 → intermediate state 4, settles at state 1 (standby). Does GPIO writes, vEEPROM persist, DSP control. Called only from `0x0800AD12`. |
-| `0x0801041C`  | ★★★  | `is_audio_active`                 | `uint8_t is_audio_active(void)` — reads `(GPIOA->IDR >> 3) & 1` via the GPIO-read helper at `0x0800D654`. **PA3 is the SPDIF activity input pin** — not PA4 as previously thought. Returns 1 if signal present, 0 if silent. |
+| `0x0801041C`  | ★★★  | `is_audio_active`                 | `uint8_t is_audio_active(void)` — reads `(GPIOA->IDR >> 3) & 1` via the GPIO-read helper at `0x0800D654`. The firmware reads PA3, but **PA3 is dead-wired in this firmware** (bench truth table 2026-06-06: PA3 reads LOW in all 6 active/standby × audio scenarios). So `is_audio_active()` always returns 0. Actual SPDIF activity is on **PA4**, which the firmware doesn't read. The auto_standby_check silent path (which requires return=1) therefore never fires; auto-standby triggers via a different mechanism. |
 | `0x08011524`  | ★★★  | `auto_standby_check`              | `uint8_t auto_standby_check(void)`. Tracks tick-since-last-mode-change. Calls `is_audio_active` + `osKernelGetTickCount`. State at RAM `0x20002504`: `[+0]=return code (0/1/2/4), [+1]=last mode, [+8]=last change tick`. Returns 2 when mode==1 (silent) sustained for `> 0x3E8 = 1000 RTX5 ticks (≈1 second)`. The outer timeout (the "couple of minutes" the user observed) is somewhere upstream that probably counts these 1-second pulses. |
 | `0x0800D66C`  | ★★★  | `osKernelGetTickCount`            | Returns `osRtxInfo[12]` (RTX5 millisecond tick) |
 | `0x0800D654`  | ★★★  | `GPIO_ReadPins`                   | `uint32_t GPIO_ReadPins(GPIO_TypeDef *port, uint32_t pin_mask)` — reads input register, returns `(IDR & mask)` non-zero if any masked bit is set. |
@@ -118,12 +118,12 @@ Confidence legend:
 
 | Pin | Role | Read/written by |
 | --- | ---- | --------------- |
-| **PA3** | SPDIF activity input (HIGH = audio present) | `is_audio_active()` @ `0x0801041C` reads `GPIOA->IDR & 0x08` |
+| **PA3** | Reads always LOW (dead-wired in this firmware) | `is_audio_active()` @ `0x0801041C` reads it but always returns 0; bench truth table confirmed |
+| **PA4** | ★ Actual SPDIF data carrier (firmware doesn't read it) | Reads HIGH (toggling at biphase rate) only in active+plugged+playing; LOW elsewhere |
 | **PC15** | Audio rail enable (HIGH = active, LOW = standby) | `transition_state` writes via `GPIO_WriteBit(GPIOC, 0x8000, val)` at `0x0800A776` (HIGH) and `0x0800A836` (LOW) |
 | **PF0** | DSP reset (active LOW: LOW = held in reset) | `transition_state` writes via `GPIO_WriteBit(GPIOF, 0x0001, val)` at `0x0800A76C`/`0x0800A828` (LOW) and `0x0800A7F0` (HIGH) |
 | **PB11** | I²C2 SDA (AF1) — DSP control bus | configured by `HAL_GPIO_Init` call at `0x0800F068` |
 | **PA1** | (?) IR receiver — VeryHigh speed Input | configured by `HAL_GPIO_Init` call at `0x0800B456`; not yet hardware-verified |
-| **PA4** | NOT used by firmware (despite hardware trace) | — |
 
 ### transition_state side-effect map
 
@@ -315,8 +315,8 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 | PA0   | Input         | Button on bar                     |
 | PA1   | Input VeryHigh | **IR receiver** (best candidate based on speed setting) |
 | **PA2** | **Output_PP**   | **★ SPDIF buffer / Toslink load-switch ENABLE.** Driven HIGH in active state (3V on Toslink Vcc), LOW in standby (0.8V leakage). Set LOW by `spdif_subsystem_init` at `0x080103dc`. Empirically confirmed via Recipe D ODR snapshots. |
-| **PA3** | **Input**     | **★ SPDIF activity input.** Read by `is_audio_active()` at `0x0801041C` as `(GPIOA->IDR >> 3) & 1`. SOT-23-5 buffer outputs HIGH when SPDIF audio present, LOW otherwise. |
-| PA4   | UNCONFIGURED  | Originally assumed to be SPDIF — but firmware never reads it. Likely unused / dev path. |
+| **PA3** | **Input**     | Reads always LOW (dead-wired). `is_audio_active()` at `0x0801041C` reads this but the result is meaningless. The SOT-23-5 chip with single trace to PA3 doesn't reach PA3 with usable signal in this firmware's configuration. |
+| **PA4** | UNCONFIGURED  | ★ Actual SPDIF data carrier (toggles at ~5 MHz biphase rate when audio playing). Firmware doesn't configure it (sits in reset-default input mode) but the Toslink module drives it. firmware_17 polls this via direct IDR read. |
 | PA5   | AF_OD AF1     | TIM2_CH1_ETR — possibly audio mute/control PWM |
 | PA8   | Output_OD PU  |                                   |
 | **PB7** | **Output_PP** | Auxiliary, NOT the audio rail despite earlier hypothesis. Pulsed LOW→HIGH during active entry (reset-pulse pattern). NOP'd in firmware_07/08 with no observable effect on Toslink Vcc. |
@@ -333,8 +333,8 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 | Component                  | Identifier               | Notes                                       |
 | -------------------------- | ------------------------ | ------------------------------------------- |
 | MCU                        | STM32F072CBT6 LQFP48     | 128 KB flash, 16 KB RAM                     |
-| SPDIF receiver             | 3-pin Toslink module     | Output → SOT-23-5 buffer → PA4 (firmware doesn't read PA4) |
-| SPDIF buffer               | SOT-23-5 marked `Z045`/`Z04S` | Single-gate logic (likely 74LVC1G14/G17/G125) |
+| SPDIF receiver             | 3-pin Toslink module     | Output → **PA4 directly** (carries raw biphase data). PA4 is the actual SPDIF data line that toggles with audio activity. |
+| SPDIF buffer               | SOT-23-5 marked `Z045`/`Z04S` | Located next to Toslink module per user inspection. Single trace to PA3. Apparently non-functional in current firmware config (PA3 always reads LOW) — likely needs an enable signal not provided. |
 | DSP                        | Renesas D2-92634-LR      | Has integrated SPDIFRX0/1. Talks to STM32 via I²C2. Firmware blob uploaded from STM32 flash at boot. |
 | Bluetooth                  | CSR/Qualcomm A64215      | A2DP receive; labelled SPI debug header on daughter board |
 | Wireless subwoofer link    | SWA12-TX (FCC NKR-SWA12) | Proprietary 2.4 GHz audio link to sub       |

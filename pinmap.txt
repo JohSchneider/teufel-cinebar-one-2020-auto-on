@@ -20,43 +20,65 @@ Notation: AF = STM32 alternate function number. OD = open-drain, PP = push-pull.
 ★★ Key pins for this project (verified) ★★
 -------------------------------------------
 
-  PA2   ★ SPDIF buffer / Toslink load-switch ENABLE.  Drives the SOT-23-5
-        chip's EN pin (or directly gates Toslink Vcc through a load switch).
-        - Active: PA2 = HIGH → Toslink Vcc ≈ 3.0 V
-        - Standby: PA2 = LOW → Toslink Vcc ≈ 0.8 V (leakage)
+  PA2   ★ SPDIF buffer power / load-switch enable (one component of the
+        Toslink rail).  Drives part of the chain that keeps Toslink Vcc at 3 V.
+        - Active state: PA2 = HIGH → Toslink Vcc = 3.0 V
+        - Standby with rail-down: PA2 = LOW → Vcc drops to 0.8 V (leakage)
         - Set LOW by `spdif_subsystem_init` at 0x080103DC (BRR write,
           GPIOA mask 0x04).
         - Called via wrapper 0x08011500 from transition_state at:
-            0x0800A762 (path 1 / active entry)  ★ also writes PA2=LOW initially
-            0x0800A81A (path 2 / standby entry) ★ THE RAIL KILL
+            0x0800A762 (path 1 / active entry)
+            0x0800A81A (path 2 / standby entry) — NOP'd in fw_08+
             0x0800A5D0 (one-shot boot init)
-        - Identified empirically via Recipe D GDB breakpoint (2026-06-05).
-        - firmware_08 NOPs the standby-path BL at 0x0800A81A to keep PA2 HIGH.
-        - Configured as Output_PP (push-pull, no pull) — note older static
-          analysis said "Output_OD PU" but that was a different init call site
-          (0x0801045E) which may be stale / from a different path.
+        - PA2 alone is NOT sufficient for rail-up (fw_10 disproved this);
+          PA2+PB7+PC15 together are needed (fw_08 confirmed).
 
-  PA3   ★ SPDIF activity input.  Read by `is_audio_active()` at 0x0801041C as
-        `(GPIOA->IDR >> 3) & 1`.  HIGH = audio signal present, LOW = silent.
-        Configured as plain Input, Low speed — receives a clean level signal
-        from the SOT-23-5 buffer (NOT the raw biphase data).
+  PA3   Reads always LOW (dead-wired in this firmware).
+        - Firmware reads it via `is_audio_active()` at 0x0801041C, masking bit 3
+        - Despite the firmware's intent, PA3 IDR is 0 in every state we tested
+          (active or standby, Toslink plugged or unplugged, audio or silent —
+          bench truth table 2026-06-06).
+        - Consequence: `is_audio_active()` always returns 0.
+          `auto_standby_check()`'s silent-path (which requires return = 1) never
+          fires. Auto-standby must trigger via a different mechanism not yet
+          traced (likely `0x08011590` time-between-edges or another timer).
+        - There IS a chip (SOT-23-5 marked Z045/Z04S) next to the Toslink
+          receiver with a single trace to PA3, but its output is not reaching
+          PA3 as expected. Possibly disabled or hi-Z.
 
-  PB7   Auxiliary — NOT the audio rail (despite earlier hypothesis).
-        Pulsed LOW→HIGH during active entry, set LOW during standby. NOPped
-        in firmware_07/08 with no observable change to Toslink Vcc.
+  PA4   ★ ACTUAL SPDIF data input (the firmware doesn't read it, but the
+        hardware drives it).  Pin 14 of LQFP48.
+        - Reads HIGH (toggling at ~5 MHz biphase rate) only in:
+            active state + Toslink plugged + audio playing on source
+        - Reads LOW (stable) in:
+            all standby states with default fw_12 (DSP is in reset),
+            all states with Toslink unplugged or paused source
+        - With DSP kept alive (fw_17 NOPs PF0=LOW at 0x0800A828), PA4
+          reflects SPDIF activity correctly in standby too. This is what
+          firmware_17 uses for wake-on-SPDIF detection (polling, not EXTI —
+          5 MHz rate would saturate the M0).
+
+  PB7   Auxiliary — NOT the audio rail by itself, but PA2+PB7+PC15 *together*
+        are needed for the rail. Pulsed LOW→HIGH during active entry, set LOW
+        during standby.
         - Active path: `bl 0x0800C4EC` → `pulse_PB7_reset` at 0x0800CA44
         - Standby path: `bl 0x0800C48C` at 0x0800A81E → set_PB7_LOW.
 
-  PC15  Auxiliary signal — NOT the Toslink rail gate (firmware_06 confirmed).
+  PC15  Auxiliary — part of the rail-up triad alongside PA2 and PB7.
         Written by `transition_state()` at 0x0800A776 (HIGH = active) and
-        0x0800A836 (LOW = standby) via GPIO_WriteBit. Possibly drives an
-        indicator or some adjacent rail. Pin mask = 0x8000.
+        0x0800A836 (LOW = standby) via GPIO_WriteBit. Pin mask = 0x8000.
 
-  PF0   ★ DSP reset (active LOW).  Written by `transition_state()`:
-        - 0x0800A76C: PF0 = LOW (assert reset, audio inactive)
-        - 0x0800A7F0: PF0 = HIGH (release reset, audio active, after ~50 ms delay)
+  PF0   ★ DSP reset (active LOW) — AND gates PA4 / Toslink module aliveness.
+        Written by `transition_state()`:
+        - 0x0800A76C: PF0 = LOW (assert DSP reset during active entry)
+        - 0x0800A7F0: PF0 = HIGH (release reset after ~50 ms)
         - 0x0800A828: PF0 = LOW (back to reset during standby entry)
-        Note: PF0 = OSC_IN by default — bar must be using HSI clock to free this pin.
+                        ★ NOP'd in firmware_17 to keep DSP alive in standby
+                        so the Toslink module continues driving PA4.
+        Note: PF0 = OSC_IN by default — bar uses HSI clock to free this pin.
+        Discovered via Phase D2 bench session 2026-06-06: setting PF0 HIGH
+        in standby brings PA4 back to toggling with SPDIF audio, while the
+        bar stays silent (LED red, no speaker output).
 
   PB11  ★ I2C2_SDA (AF1).  STM32 ↔ DSP control bus.
 
@@ -65,16 +87,27 @@ Notation: AF = STM32 alternate function number. OD = open-drain, PP = push-pull.
         Not yet confirmed via hardware probe.
 
 
-Notable: PA4 is NOT used by firmware
-------------------------------------
-PA4 (pin 14) is NOT configured by any of the 33 `HAL_GPIO_Init` calls. It sits
-in default-input mode after reset and is never read. Earlier hardware tracing
-suggested SPDIF data lands on PA4 — but firmware-side it's PA3 that does the
-work via `is_audio_active()`. Possibilities:
-  a) Hardware trace was misread by one pin (PA3 vs PA4 are adjacent: pins 13/14)
-  b) Board has dual routing — buffer outputs to both PA3 (level) and PA4 (raw),
-     firmware only uses PA3
-The pending bench probe (task #10) on pin 13 will resolve this.
+Notable: PA3 vs PA4 — we got this backwards for many sessions
+--------------------------------------------------------------
+Early static analysis decoded `is_audio_active()` at 0x0801041C as reading PA3
+(mask 0x08 = bit 3) and concluded "PA3 is the SPDIF activity input". The
+bench truth table on 2026-06-06 proved this wrong:
+
+  | LED state | Toslink | Audio | PA3 (bit 3) | PA4 (bit 4) |
+  |-----------|---------|-------|-------------|-------------|
+  | purple    | unplugged | —     | 0           | 0           |
+  | purple    | plugged   | play  | 0           | toggles ★   |
+  | purple    | plugged   | pause | 0           | 0           |
+  | red       | plugged   | play  | 0           | 0 (default fw_12) |
+  | red       | plugged   | pause | 0           | 0           |
+  | red       | unplugged | —     | 0           | 0           |
+
+PA4 is the SPDIF data line (matches the original PCB-trace deduction).
+PA3 is dead-wired in this firmware's configuration — possibly the SOT-23-5
+chip on the board needs an enable signal that this firmware doesn't provide.
+
+The firmware reads the wrong pin. Goal #2 Step 2 (firmware_17) bypasses
+`is_audio_active()` entirely and polls PA4 directly.
 
 
 Notable: PA2 is the actual Toslink Vcc gate

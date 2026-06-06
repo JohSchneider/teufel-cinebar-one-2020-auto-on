@@ -79,7 +79,7 @@
 0x0800AD12	event_loop_thread_call_transition	LABEL	bl transition_state inside dispatcher
 0x0800AD1C	event_loop_thread_call_notify	LABEL	bl notify(0, retval) — the broadcast Goal #1 needed
 0x0800BBDC	notify	FUNC	int notify(uint8_t channel, uint32_t value) — alloc msg pool, fill {channel, value}, post via osMessageQueuePut
-0x0801041C	is_audio_active	FUNC	uint8_t is_audio_active(void) — returns (GPIOA->IDR >> 3) & 1; reads ★PA3★
+0x0801041C	is_audio_active	FUNC	uint8_t is_audio_active(void) — returns (GPIOA->IDR >> 3) & 1; reads PA3. ★ CORRECTION 2026-06-06: PA3 is dead-wired (always reads LOW) — this function always returns 0 in practice. Actual SPDIF activity is on PA4, not PA3. The firmware reads the wrong pin; auto_standby_check's silent-path therefore never fires.
 0x08011524	auto_standby_check	FUNC	uint8_t auto_standby_check(void) — checks audio activity vs elapsed time, returns 2 when sustained mode==1 (silent) > 1000 ticks
 0x0800D654	GPIO_ReadPins	FUNC	uint32_t GPIO_ReadPins(GPIO_TypeDef *port, uint32_t pin_mask) — used by is_audio_active
 0x0800D65E	GPIO_WriteBit	FUNC	void GPIO_WriteBit(GPIO_TypeDef *port, uint32_t pin_mask, uint32_t value); used by transition_state
@@ -117,9 +117,19 @@
 0x08010278	create_rtx_queue_group	FUNC	Creates 3 message queues at g_message_queues_b
 0x08011500	spdif_subsystem_init_wrapper	FUNC	Thin wrapper: push {r4,lr}; bl spdif_subsystem_init; pop {r4,pc}. Called from transition_state path 1 (active entry) AND path 2 (standby entry — at 0x0800A81A, the rail killer) and boot init at 0x0800A5D0.
 0x08011508	transition_state_finalize	FUNC	Called near end of transition_state when going to active-stable (state[0]=2)
-0x080103BC	spdif_subsystem_init	FUNC	Enables GPIOA clock, writes PA2=LOW (BRR), reconfigs PA2 as Output_PP, reconfigs PA3 as Input, sets cached_spdif_state at 0x20002??? to -1. ★ PA2-LOW is the rail kill that disables the SOT-23-5 SPDIF buffer.
-0x0801041C	is_audio_active	FUNC	Reads PA3 = (GPIOA->IDR >> 3) & 1; returns 1 if HIGH (SPDIF activity detected)
-0x0800A81A	standby_path_bl_spdif_init	LABEL	BL to spdif_subsystem_init_wrapper from transition_state path 2 — NOP'd in firmware_08 to prevent PA2=LOW
+0x080103BC	spdif_subsystem_init	FUNC	Enables GPIOA clock, writes PA2=LOW (BRR), reconfigs PA2 as Output_PP, reconfigs PA3 as Input. NOTE 2026-06-06: PA3 is the wrong pin (always LOW). PA4 is the actual SPDIF data line.
+0x0800A81A	standby_path_bl_spdif_init	LABEL	BL to spdif_subsystem_init_wrapper from transition_state path 2 — NOP'd in firmware_08+ to prevent PA2=LOW
+0x0800A828	standby_path_bl_pf0_low	LABEL	BL GPIO_WriteBit(GPIOF, 1, 0) — PF0 LOW (DSP reset). NOP'd in firmware_17 to keep DSP alive in standby (gates PA4/Toslink module aliveness).
+0x0800ACC8	event_loop_bne_skip_standby	LABEL	BNE 0x800acb4 — originally skipped auto_standby_check in non-active states. NOP'd in firmware_17 so the BL at +0x02 runs in all states (our shim dispatches).
+0x0800ACCA	event_loop_bl_auto_standby	LABEL	BL auto_standby_check — redirected in firmware_17 to call our polling shim at 0x0801E820.
+0x0800CED4	EXTI0_1_IRQHandler	FUNC	Real EXTI line 0,1 handler — installed via RTX5 VTOR relocation (static table at 0x54/0x58/0x5C all point to trap). Calls 0x800D4E4 for bits 0, 1.
+0x0800CEE4	EXTI2_3_IRQHandler	FUNC	Real EXTI line 2,3 handler. Calls 0x800D4E4 for bits 2, 3. ★ bit 3 dispatch goes to is_audio_active+0x8011590 but PA3 is dead so this fires rarely if ever.
+0x0800CEF4	EXTI4_15_IRQHandler	FUNC	Real EXTI line 4..15 handler. Calls 0x800D4E4 sequentially for bits 4 through 15. ★ bit 4 dispatch falls through (no case in dispatcher) — would be usable for PA4 wake IF PA4 didn't toggle at 5MHz biphase rate (too fast for EXTI).
+0x0800D494	exti_dispatch	FUNC	switch (bit_mask) {1→noop, 2→PB1, 8→is_audio_active+0x8011590, 0x2000→0x800b38c, 0x4000→0x800cad4, else: noop}
+0x0800D4E4	exti_check_pending	FUNC	Reads EXTI->PR, if r0-bit set: clears PR bit, calls exti_dispatch. Helper for the three EXTI_IRQ handlers.
+0x08011590	track_edge_timing	FUNC	Called from PA3 EXTI dispatch. Computes elapsed = now - last; stores last=now; records decision = 4 if elapsed > 450, else 1, else unchanged.
+0x0801E820	wake_on_spdif_shim	FUNC	firmware_17 shim. 84 bytes. Dispatches by state[0]: active→auto_standby_check; standby→PA4 polling with debounce + silence_seen gate (state at 0x20002506) → post_event_type0(2) on transition. Other states→no-op.
+0x20002506	g_silence_seen	DATA	Byte at +2 in g_auto_standby_state struct. NEW USE introduced by firmware_17 shim — 1 if last poll cycle observed all-LOW PA4, 0 otherwise. Drives the wake gate.
 
 # === Patch shim (firmware_05, Goal #1) ===
 0x0801E800	patch_shim_autoboot_active	FUNC	22-byte shim: orig init 2 + transition_state(2) + notify(0, retval)
