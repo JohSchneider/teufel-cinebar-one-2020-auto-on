@@ -1,7 +1,7 @@
 # DSP control protocol — Renesas D2-92634-LR on Teufel Cinebar One
 
-All findings reverse-engineered statically from `/tmp/firmware/firmware_01_baseline.bin`
-(disasm: `/tmp/firmware/disasm.txt`). No bench captures — RE leverages the host firmware's I²C protocol implementation. Last updated 2026-06-06.
+All findings reverse-engineered statically from `/tmp/firmware/firmware_01_original-dump.bin`
+(disasm: `/tmp/firmware/disasm.txt`). RE leverages the host firmware's I²C protocol implementation. Last updated 2026-06-07.
 
 ## Architecture overview
 

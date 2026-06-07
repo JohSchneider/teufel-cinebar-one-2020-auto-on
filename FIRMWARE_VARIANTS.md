@@ -1,6 +1,6 @@
 # Teufel Cinebar One — Firmware Variants
 
-Index of every firmware binary built during this RE work. **fw_17** is the current target for full Goal #2; **fw_12** is the proven-stable fallback. Binaries the user has deleted from disk after they were proven obsolete are listed at the bottom under "Archived/removed".
+Index of every firmware binary built during this RE work. **fw_22** is the proven-stable production binary (auto-on + wake-on-SPDIF). **fw_23** and **fw_24** are experimental layers on top of fw_22 (audio mode forcing, IR-event logging). Binaries the user has deleted from disk after they were proven obsolete are listed at the bottom under "Archived/removed".
 
 All binaries are 128 KB, load at flash `0x08000000`. Flash via:
 
@@ -30,6 +30,8 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 | `firmware_12_autoboot-active-rail-on.bin` | 36 | ★ ✓ Production (Goal #2 Step 1) | fw_05 + fw_08 combo. Bar auto-boots active, rail stays at 3V across standby cycles. **No cold-boot quirk** — active runs first, then rail is already up when standby happens. |
 | `firmware_13_combo-5min-standby.bin` | 37 | ⏸ Deferred | fw_12 + single-byte timeout reduction. Reaches standby in ~3 min but lands in cyan intermediate state instead of red. Deferred until gating mechanism understood. |
 | `firmware_22_wake-on-spdif.bin` | 86 | ★ ✓ Production (Goal #1 + Goal #2 complete) | Same design as fw_21 but with **2-byte fix to LDR offsets** in the shim. fw_21 had off-by-one in `ldr r5` and `ldr r6` PC-relative offsets — r5 loaded state struct instead of autostandby, r6 loaded autostandby instead of GPIOA->IDR. Bug discovered via GDB confirming shim invocation but silence_seen at 0x20002506 never updated; manual `post_event_type0(2)` via PC manipulation wake the bar, isolating the issue to the shim's reads/writes. Bench-verified 2026-06-06: AC restore auto-boots active; muted source auto-suspends in ~15 min; unmute wakes within ~25 ms. **IR remote no longer needed in normal use.** |
+| `firmware_23_music-mode-default.bin` | +32 from fw_22 | ✓ Experimental (audio mode tuning) | fw_22 + a 24-byte wrapper at `0x0801E880` invoked from both `transition_state` call sites. After every `→active` transition, the wrapper calls `set_audio_mode(0)` to force Music mode (vs whatever the DSP blob defaults to, likely Voice for source 2). Used for A/B testing audio character. `gdb/switch_mode.sh` provides live mode switching on top of this. |
+| `firmware_24_ir-logging.bin` | +64 from fw_23 | ✓ Diagnostic (IR-decoder hunt) | fw_23 + an 8-byte detour at notify (`0x0800BBDC`) → 56-byte logging shim at `0x0801E8C0`. Every `notify(channel, value)` call now records `(channel, caller_lr)` into a 64-entry ring buffer at RAM `0x20003C00`. Used to identify the IR decoder by finding `channel=2` entries (IR-power) and their `lr` (caller's return addr). Read via `gdb/read_ir_log.sh`. Audio behavior identical to fw_23. |
 
 ---
 
@@ -107,7 +109,7 @@ for off in 0x0A81A 0x0A81E 0x0A836; do
 done
 ```
 
-### `firmware_22_wake-on-spdif.bin` — Goal #2 Step 2 candidate (⏳ pending bench test)
+### `firmware_22_wake-on-spdif.bin` — Goal #1 + Goal #2 production ★
 
 **Behavior** (intended): everything fw_12 does, plus the bar auto-wakes when the Toslink fiber returns from a "dark" state in standby (audio resumes or source unmutes or cable plugged back in). Wake fires within ~22 sec of fiber lighting back up (one event_loop poll cycle). IR-off while audio is still playing does **not** cause a wake-loop because the wake gate requires observing fiber-dark first.
 
@@ -201,6 +203,41 @@ printf '\xf0\xb5\x11\x4c\x11\x4d\x20\x78\x02\x28\x02\xd1\xf2\xf7\x7a\xfe\x19\xe0
 
 ---
 
+### `firmware_23_music-mode-default.bin` — Force Music mode at every wake
+
+**Behavior**: identical to fw_22, plus every `→active` transition (cold boot, IR-on, wake-on-SPDIF) calls `set_audio_mode(0)` to override the DSP blob's default mode (which appears to be Voice for source 2 = Toslink). Built to test whether mode is the source of the rare metallic click — verdict: Music vs Voice barely differ for stereo PCM (Movie goes silent on stereo). Side-effect: companion `gdb/switch_mode.sh` script lets you live-switch modes during playback.
+
+**Mechanism**: 24-byte wrapper at `0x0801E880` that calls `transition_state(action)` then, if `action==2`, calls `set_audio_mode(0)`. Both `transition_state` BL sites (shim 1 @ `0x0801E808` and event-dispatch @ `0x0800AD12`) are redirected to the wrapper.
+
+**Patches (32 bytes vs fw_22)**:
+| Offset | Original | New | Why |
+|---|---|---|---|
+| `0x0801E808` | `eb f7 9a ff` (→ 0x800A740) | `00 f0 3a f8` (→ 0x0801E880) | shim 1 BL redirect |
+| `0x0800AD12` | `ff f7 15 fd` (→ 0x800A740) | `13 f0 b5 fd` (→ 0x0801E880) | event-dispatch BL redirect |
+| `0x0801E880` | `ff …` × 24 | 24-byte wrapper | the wrapper itself |
+
+See `SHIMS.md` for the wrapper's full assembly. Build script: `/tmp/firmware/build_fw_force-mode.py` — takes mode (0/1/2) as arg, can rebuild Music/Movie/Voice variants from fw_22.
+
+### `firmware_24_ir-logging.bin` — Notify() call logging shim ★
+
+**Behavior**: identical to fw_23 (Music mode forced), plus an inline call to a logging shim on every `notify(channel, value)` invocation. Each call records `(channel, caller_lr)` into a 64-entry ring buffer at RAM `0x20003C00`. Used to find the IR decoder by capturing where `notify(channel=2, ...)` originates (the IR-power button maps to channel 2).
+
+**Mechanism**: 8-byte detour overwrites notify's first 4 instructions; jumps to a 56-byte shim in patch space that replicates the prologue, logs to the ring buffer, then tail-jumps to `notify+8`. No GDB breakpoints needed; bar runs at full speed.
+
+**Patches (64 bytes vs fw_23)**:
+| Offset | Original | New | Why |
+|---|---|---|---|
+| `0x0800BBDC` | `f8 b5 0c 4c 0d 46 06 46` | `00 4b 18 47 c1 e8 01 08` | `ldr r3, =shim+1; bx r3` — preserves LR (unlike BL) |
+| `0x0801E8C0` | `ff …` × 56 | 56-byte shim | replicate prologue + log + tail-call notify+8 |
+
+**Ring buffer layout** at `0x20003C00`:
+- offset 0: `u32 idx` (write pointer, wraps at 64)
+- offset 4 + i*8: `u32 channel`, `u32 caller_lr`
+
+Read via `gdb/read_ir_log.sh`. Build script: `/tmp/firmware/build_fw24_ir_logging.py`.
+
+---
+
 ## Diagnostics / earlier waypoints (kept for archeology)
 
 ### `firmware_03_redirect-shim-noop.bin`
@@ -238,4 +275,4 @@ These were intermediate dead-ends from the iteration on Goal #2 Step 2 before th
 1. **Always read the actual IDR for a pin under varied conditions before assuming what it indicates.** We followed the firmware's `is_audio_active()` to PA3 for many sessions before noticing PA3 reads stuck-LOW. The PCB-trace hypothesis (PA4 = SPDIF) was right; the firmware reads the wrong pin.
 2. **GPIO outputs you THINK you control might not be the actual gating signal.** Rail-up needed PA2 *and* PB7 *and* PC15; missing any of them and the rail stays off. And PF0 turned out to also be required for PA4 to track SPDIF in standby.
 3. **Calling firmware functions outside their natural context can trigger error LEDs / unintended state.** `0x0800C4EC`'s embedded I²C check (fw_11) and `0x08011508`'s PA3-EXTI reconfig (fw_09) both had side effects we didn't predict. When patching, prefer the simplest direct GPIO operations or call the natural state-machine entry points (transition_state(2)).
-4. **The bar's RTX uses a ~1.1 Hz tick rate** (not the RTX5 default 1 kHz). 1000 ticks ≈ 15 min. Affects all timing assumptions.
+4. **The bar's RTX uses the default 1 kHz tick rate** (we initially miscalculated as ~1.1 Hz and built fw_20 around that — wrong). 1000 ticks = 1 second. The observed "~15 min" auto-standby actually comes from the SOT-23-5 chip's hysteresis (PA3 carrier-detect), not a firmware timer. The firmware's `auto_standby_check` adds only a 1-second debounce on top.

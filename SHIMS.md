@@ -1,14 +1,15 @@
 # Cinebar One — Patch Shims
 
-Two shims sit in patch flash space (`0x0801E800`–`0x0801EFFF`, ~6 KB available).
-Both are invoked by replacing one BL site each in `event_loop_thread`'s body
-with a BL to the shim. The shim returns to the original caller via `pop {pc}`
-(or by tail-calling the original target the BL was meant to invoke).
+Patches sit in flash patch space (`0x0801E800`–`0x0801EFFF`, ~6 KB available)
+plus a few in-place detours over original function bodies. The shims either
+return via `pop {pc}` or tail-call the original target.
 
-| Shim | Address | Size | Used by | Replaces BL at | Purpose |
-|------|---------|------|---------|----------------|---------|
-| Autoboot-to-active | `0x0801E800` | 22 bytes | fw_05, fw_08, fw_12, fw_13, fw_22 | `bl 0x0800AE78` @ `0x0800ACAC` | On boot, drive bar to active state and broadcast LED change |
-| Wake-on-SPDIF wrapper | `0x0801E820` | 84 bytes | fw_22 only | `bl 0x08008D74` (osMessageQueueGet) @ `0x0800ACBC` | In standby idle, detect fiber-lights-up transition and post wake event |
+| # | Shim | Address | Size | Used by | Hook | Purpose |
+|---|------|---------|------|---------|------|---------|
+| 1 | Autoboot-to-active | `0x0801E800` | 22 bytes | fw_05, fw_08, fw_12, fw_22, fw_23, fw_24 | `bl 0x0800AE78` @ `0x0800ACAC` redirected | On boot, drive bar to active state and broadcast LED change |
+| 2 | Wake-on-SPDIF wrapper | `0x0801E820` | 84 bytes | fw_22, fw_23, fw_24 | `bl 0x08008D74` (osMessageQueueGet) @ `0x0800ACBC` redirected | In standby idle, detect fiber-lights-up transition and post wake event |
+| 3 | Force-mode wrapper | `0x0801E880` | 24 bytes | fw_23, fw_24 | both `bl transition_state` sites redirected (`0x0801E808`, `0x0800AD12`) | After every `→active` transition, call `set_audio_mode(N)` to override the DSP blob default |
+| 4 | Notify-logging shim | `0x0801E8C0` | 56 bytes | fw_24 only | notify() prologue overwritten in-place at `0x0800BBDC` (detour to shim) | Log every `notify(channel, value)` call's `(channel, caller_lr)` to RAM ring buffer at `0x20003C00` |
 
 Patch space is 4-byte aligned and ends well before flash limit. Plenty of room for additional shims if needed.
 
@@ -195,27 +196,122 @@ wrap_call:
 
 ---
 
-## Patch space layout (cumulative)
+## Shim 3 — Force-mode wrapper  (`0x0801E880`, 24 bytes)
+
+**Purpose**: After every `→active` transition (cold boot, IR-on-from-standby, wake-on-SPDIF), call `set_audio_mode(N)` to override whatever audio mode the DSP blob defaults to. Used for A/B audio-mode testing (Music/Movie/Voice). Forced mode is encoded in a single byte of the wrapper — buildable as fw_23/24/25 via `build_fw_force-mode.py` (mode 0/1/2 respectively).
+
+**How it's hooked**: There are exactly **two** `bl transition_state` call sites in the firmware:
+- `0x0801E808` — inside Shim 1 (autoboot path)
+- `0x0800AD12` — inside the event-loop dispatch (IR-on and wake-on-SPDIF path)
+
+Both are redirected from `transition_state @ 0x0800A740` to this wrapper at `0x0801E880`. The wrapper calls the original, then conditionally calls `set_audio_mode(N)` only if the transition action was `2` (active), avoiding the I²C call during `→standby`.
+
+**Wrapper disassembly**:
+```
+0x0801E880: push  {r4, r5, lr}            ; b5 30
+0x0801E882: mov   r4, r0                   ; 46 04   ; r4 = action (preserved across BL)
+0x0801E884: bl    0x0800A740               ; eb f7 5c ff  transition_state(action)
+0x0801E888: mov   r5, r0                   ; 46 05   ; r5 = retval
+0x0801E88A: cmp   r4, #2                   ; 2c 02
+0x0801E88C: bne.n  skip                    ; d1 01
+0x0801E88E: movs  r0, #N                   ; 20 NN   ; ★ MODE BYTE (0/1/2)
+0x0801E890: bl    0x0800C560               ; ed f7 66 fe  set_audio_mode(N)
+                                            ; skip:
+0x0801E894: mov   r0, r5                   ; 46 28   ; restore retval
+0x0801E896: pop   {r4, r5, pc}             ; bd 30
+```
+
+**Key fact**: byte at flash file-offset `0x1E88E` is the mode immediate. Patch that single byte to `0x00` for Music, `0x01` for Movie, `0x02` for Voice — no other changes needed to switch a built variant.
+
+**Side-tool**: `gdb/switch_mode.sh` switches modes live via GDB without reflashing — it just halts the bar, manually invokes `set_audio_mode(N)` via register manipulation + a BKPT trampoline at RAM `0x20002000`, and resumes. Doesn't depend on Shim 3 being present (works against any fw_22+ binary).
+
+---
+
+## Shim 4 — Notify-logging shim  (`0x0801E8C0`, 56 bytes)
+
+**Purpose**: Capture every `notify(channel, value)` call into a RAM ring buffer for offline analysis. Used to locate the IR decoder by finding which call site posts `notify(channel=2, ...)` for the IR-power button. Operating principle: no GDB breakpoints, no CPU halts — the shim runs inline as a function-call overhead added to notify, so the bar's timing is undisturbed (IR decoder works normally).
+
+**How it's hooked**: notify's first 4 instructions (8 bytes at `0x0800BBDC`) are overwritten with an in-place detour:
+```
+0x0800BBDC: ldr   r3, [pc, #0]              ; 4b 00
+0x0800BBDE: bx    r3                         ; 47 18
+0x0800BBE0: .word 0x0801E8C1                ; (= Shim 4 addr | Thumb bit)
+```
+
+The `ldr`+`bx` sequence preserves LR (unlike a BL would), so when Shim 4 chains to `notify+8`, the original caller_return is still in LR for the eventual `pop {pc}` to use.
+
+**Shim 4 disassembly** (replicates notify's first 4 instructions, then logs, then tail-jumps to `notify+8`):
+```
+0x0801E8C0: push  {r3, r4, r5, r6, r7, lr}  ; b5 f8   ; original push
+0x0801E8C2: ldr   r4, [pc, #40]              ; 4c 0a   ; r4 = 0x200023BC (g_notify_struct)
+0x0801E8C4: mov   r5, r1                     ; 46 0d   ; (original mov r5, r1)
+0x0801E8C6: mov   r6, r0                     ; 46 06   ; (original mov r6, r0)
+;; --- logging start ---
+0x0801E8C8: ldr   r0, [pc, #36]              ; 48 09   ; r0 = 0x20003C00 (log buf)
+0x0801E8CA: ldr   r1, [r0, #0]               ; 68 01   ; r1 = idx
+0x0801E8CC: cmp   r1, #63                    ; 29 3F
+0x0801E8CE: bls.n  no_wrap                   ; d9 01
+0x0801E8D0: movs  r1, #0                     ; 21 00   ; wrap idx
+                                              ; no_wrap:
+0x0801E8D2: lsls  r2, r1, #3                 ; 00 ca   ; r2 = idx*8
+0x0801E8D4: adds  r2, #4                     ; 32 04   ; r2 = idx*8 + 4
+0x0801E8D6: add   r2, r0                     ; 44 02   ; r2 = buf + idx*8 + 4
+0x0801E8D8: str   r6, [r2, #0]               ; 60 16   ; entry.channel = r6
+0x0801E8DA: mov   r3, lr                     ; 46 73   ; r3 = caller_return
+0x0801E8DC: str   r3, [r2, #4]               ; 60 53   ; entry.lr = r3
+0x0801E8DE: adds  r1, #1                     ; 31 01   ; idx++
+0x0801E8E0: str   r1, [r0, #0]               ; 60 01   ; save idx
+;; --- logging end; tail-jump ---
+0x0801E8E2: mov   r0, r6                     ; 46 30   ; restore r0 = channel
+0x0801E8E4: mov   r1, r5                     ; 46 29   ; restore r1 = value
+0x0801E8E6: ldr   r2, [pc, #16]              ; 4a 04   ; r2 = notify+8 thumb addr
+0x0801E8E8: bx    r2                         ; 47 10   ; jump (LR untouched)
+;; literal pool:
+0x0801E8EC: .word 0x200023BC                 ; g_notify_struct (orig ldr r4 target value)
+0x0801E8F0: .word 0x20003C00                 ; log buffer base
+0x0801E8F4: .word 0x0800BBE5                 ; notify+8 with Thumb bit
+```
+
+**RAM ring buffer** at `0x20003C00`:
+- offset 0: `u32 idx` (write pointer, wraps at 64; bounded by `cmp #63; bls; movs r1, #0`)
+- offset 4 + i*8: `u32 channel; u32 caller_lr` for entry i ∈ [0, 64)
+
+Total RAM used: 4 + 64×8 = **516 bytes**. Buffer is in the high RAM region (STM32F072CBT6 has 16 KB ending at `0x20004000`); 516 bytes at `0x20003C00` ends at `0x20003E04` — within RAM, and the user has not reported issues with stack collision at this address.
+
+**Idx initialization**: not explicitly zeroed; if the RAM happens to hold a value > 63 at boot, the first call's bound check resets idx to 0. So the buffer is self-healing on cold boot.
+
+**Reader**: `gdb/read_ir_log.sh` halts the bar briefly, reads idx + all 64 entries, and pretty-prints non-empty ones. The bar continues normally afterward.
+
+---
+
+## Patch space layout (cumulative, fw_24)
 
 ```
-0x0801E800 ┌──────────────────────────────────┐
-           │ Shim 1: Autoboot-to-active       │ 22 bytes
-0x0801E816 ├──────────────────────────────────┤
-           │ 0xFF padding (10 bytes)          │
-0x0801E820 ├──────────────────────────────────┤
-           │ Shim 2: Wake-on-SPDIF wrapper    │ 84 bytes
-0x0801E874 ├──────────────────────────────────┤
-           │ 0xFF padding (rest of region)    │
-           │ ~6 KB available for future shims │
-0x0801FFFF └──────────────────────────────────┘
+0x0801E800 ┌──────────────────────────────────────────┐
+           │ Shim 1: Autoboot-to-active                │ 22 bytes (fw_05+)
+0x0801E816 ├──────────────────────────────────────────┤
+           │ 0xFF padding (10 bytes)                   │
+0x0801E820 ├──────────────────────────────────────────┤
+           │ Shim 2: Wake-on-SPDIF wrapper             │ 84 bytes (fw_22+)
+0x0801E874 ├──────────────────────────────────────────┤
+           │ 0xFF padding (12 bytes)                   │
+0x0801E880 ├──────────────────────────────────────────┤
+           │ Shim 3: Force-mode wrapper                │ 24 bytes (fw_23+)
+0x0801E898 ├──────────────────────────────────────────┤
+           │ 0xFF padding (40 bytes)                   │
+0x0801E8C0 ├──────────────────────────────────────────┤
+           │ Shim 4: Notify-logging shim               │ 56 bytes (fw_24)
+0x0801E8F8 ├──────────────────────────────────────────┤
+           │ 0xFF padding (rest, ~5.7 KB)              │
+0x0801FFFF └──────────────────────────────────────────┘
 ```
 
 When the user's `firmware_02_swd-write-test.bin` wrote `DEADBEEF` at `0x1FF00` to verify SWD write/read, it landed within this region (the patch space starts at `0x1E800`). That test confirmed both that we can write here and that the bar still works after a flash — it's also our rollback verification target (re-flash baseline → `0x1FF00` reverts to `0xFFFFFFFF`).
 
-## RAM usage by both shims
+## RAM usage by all shims
 
-| Address | Byte size | Description | Set by |
-|---------|-----------|-------------|--------|
+| Address | Bytes | Description | Set by |
+|---------|------:|-------------|--------|
 | `0x20002506` | 1 | `silence_seen` flag (1 = silence observed in standby; 0 = haven't seen silence yet) | Shim 2 |
-
-That's it. Both shims are stateless beyond this single byte and the existing firmware state they read.
+| `0x20002000` | 2 | BKPT trampoline used by `switch_mode.sh` (NOT firmware-resident; written by GDB only) | gdb/switch_mode.sh |
+| `0x20003C00` | 516 | IR log: `u32 idx` + 64 entries × `(u32 channel, u32 caller_lr)` | Shim 4 |

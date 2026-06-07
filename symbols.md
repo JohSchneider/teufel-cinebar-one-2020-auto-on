@@ -114,6 +114,30 @@ Confidence legend:
 | `0x0800CF94`  | ★★★  | `FLASH_PageErase`                 | `void FLASH_PageErase(uint32_t page_addr)`. Generic flash page erase; takes page address in R0. |
 | `0x0800D340`  | ★★★  | `vEEPROM_erase_loop`              | Iterates over vEEPROM pages, calls FLASH_PageErase per page. Page size = 2048 (`1<<11`). |
 
+### DSP control (Renesas D2-92634-LR via I²C2 — PB10/PB11 AF1)
+
+| Address       | Conf | Symbol                            | Signature / notes |
+| ------------- | ---- | --------------------------------- | ----------------- |
+| `0x0800C4EC`  | ★★★  | `dsp_init_dispatcher`             | Called from `transition_state(2)`. Holds DSP reset (PF0=LOW), waits, releases, uploads the 30 KB DSP firmware blob via `0x0800CA70`, then post-init wait. Doesn't call `write_dsp_register` directly. |
+| `0x0800C560`  | ★★★  | `set_audio_mode`                  | `void set_audio_mode(uint8_t mode)`. Dispatches `r0 ∈ {0=Music, 1=Movie, 2=Voice}`, writes 12 DSP registers `0x2E–0x39`. See `dsp_protocol.md` for the per-mode value matrix. Only callers in stock firmware: the source-switch handler at `0x0800A664`. fw_23's wrapper at `0x0801E880` adds it after every `→active` transition. |
+| `0x0800C5F4`  | ★★    | per-mode preset constants         | Two 4-byte words: `0x00800001` (the "enable" magic) and `0x00A56208` (the Voice-mode coefficient). Loaded by `set_audio_mode`. |
+| `0x0800C744`  | ★★    | master-output-gain loader         | At boot, reads a value from vEEPROM via `0x0800CF54`, writes it (via `write_dsp_register`) to DSP regs `0xE4–0xE7`. Bench-traced value = `0xFFFFFB` (= -5 in 24-bit signed). Candidate for "patch the amp headroom" experiment (task #60). |
+| `0x0800C7A0`  | ★★★  | bass-or-limiter writer            | Clamps r0 to `[-14, 0]`, persists to vEEPROM, writes to DSP regs `0x0F` and `0xE9`. Called only from event-6 handler (`0x0800A858`) with payload-dependent values {-3, 0, 2}. Either bass-cut or limiter — disambiguation pending. |
+| `0x0800CA70`  | ★★★  | `dsp_blob_uploader`               | `int dsp_blob_uploader(void *buf, size_t len)`. Wrapper for `HAL_I2C_Mem_Write` to DSP slave `0x88` (= 7-bit `0x44`), memory address 0, 16-bit address size. Uploads the 30,661-byte blob at flash `0x08011E48`. |
+| `0x0800CAA0`  | ★★★  | `write_dsp_register`              | `int write_dsp_register(uint32_t reg_24b, uint32_t val_24b)`. Builds a 6-byte buffer (3-byte BE addr + 3-byte BE value) and calls `0x0800FBC4` (mutex-guarded I²C TX). DSP runtime slave addr = `0xB2` (= 7-bit `0x59`). **56 call sites** in stock firmware. |
+| `0x0800FBC4`  | ★★    | `i2c2_mutex_tx`                   | Generic mutex-guarded I²C2 write. Pushes I²C2 mutex handle, calls `HAL_I2C_Master_Transmit @ 0x0800D93C`. |
+
+### Notify → command-dispatch path
+
+`notify(channel, value)` queues `{channel byte, value u32}` messages onto a queue stored at `*(g_notify_struct+12) = *(0x200023C8)`. Two consumers:
+
+| Consumer | Address | Role |
+|---|---|---|
+| `event_loop_thread` | `0x0800ACA4` | (main; reads from a DIFFERENT queue) |
+| `command_dispatch_thread` | `0x0800BCAC` | Reads notify-queue messages, dispatches by `msg.byte[0]` (= channel) via inline jump table at `0x0800BCE2`. IR events arrive here. |
+
+The IR-decoder calls `notify(channel ∈ 2..8, ...)` with the channel encoding which button was pressed. The channel-to-button map is unknown; fw_24 captures it via Shim 4 + `gdb/read_ir_log.sh`.
+
 ### Key hardware-pin mappings (★ verified)
 
 | Pin | Role | Read/written by |

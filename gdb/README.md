@@ -9,7 +9,8 @@ Consolidated live-debug tooling for the Cinebar One firmware-RE project.
 | `README.md` | This file: prerequisites, helper-script usage, recipes |
 | `switch_mode.sh` | Wrapper to switch the bar's audio mode via GDB (Music/Movie/Voice) live |
 | `trace_modes.gdb` | GDB command file to capture full DSP-write trace per mode |
-| `scratch/` | Disposable ad-hoc test scripts (safe to delete) |
+| `read_ir_log.sh` | Dump the fw_24 IR-notify ring buffer at `0x20003C00` (use after IR-button press) |
+| `scratch/` | Disposable ad-hoc test scripts including the deprecated `capture_ir_notify.sh` (safe to delete) |
 
 ## Prerequisites
 
@@ -209,6 +210,40 @@ confirm the bar's stock boot-time DSP config:
 For per-mode trace (calls `set_audio_mode(0)` then `(1)` then `(2)`):
 see `trace_modes.gdb` in this directory. Bar must already be running fw_22
 or fw_23 (or any binary that has `set_audio_mode` at `0x0800C560`).
+
+---
+
+## Recipe H — IR-decoder hunt via `notify()` logging shim (fw_24)
+
+**Why**: dynamic GDB breakpoints at `notify()` (0x0800BBDC) disrupt the IR decoder's ~70 ms NEC frame timing — bp halts cause missed pulses → IR receive fails → bar HardFaults eventually. The fix: instrument the firmware itself with a logging shim that records `(channel, caller_lr)` to a ring buffer in RAM. No GDB halts during runtime. See `SHIMS.md` (Shim 4) for details.
+
+**Usage**:
+
+```bash
+# 1. Flash fw_24 (extends fw_23 with the logging shim)
+openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
+  -c 'program firmware_24_ir-logging.bin verify reset exit 0x08000000'
+
+# 2. (Optional) Reset the log index so only fresh entries appear:
+gdb-multiarch -batch -ex 'set confirm off' -ex 'set remotetimeout 30' \
+  -ex 'target extended-remote :3333' -ex 'monitor halt' \
+  -ex 'set *(unsigned*)0x20003C00 = 0' \
+  -ex 'monitor resume' -ex 'quit' >/dev/null 2>&1
+
+# 3. Press IR-power once. Bar responds normally — the shim runs inline
+#    on each notify() call without halting.
+
+# 4. Dump the ring buffer:
+./read_ir_log.sh
+```
+
+**Reading the output**: entries with `channel=2` are the IR-power button. The `lr` field is the return address right after the `bl notify` instruction in the IR-decoder function; subtract 4 to find the BL site itself. Disassemble the surrounding function to find the NEC-code-to-channel lookup table.
+
+Other channels seen in the wild:
+- 0, 1 — state transitions (from `event_loop_thread`)
+- 9, 14 — LED animation updates (called often during boot)
+- 11, 12, 13, 15–19 — various sub-state transitions
+- 2–8 — IR remote button channels (the ones we want)
 
 ---
 
