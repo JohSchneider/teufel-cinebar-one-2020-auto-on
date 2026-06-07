@@ -148,7 +148,11 @@ Tiny one-shot bx-lr functions; each loads a literal struct ptr and reads one byt
 | `event_loop_thread` | `0x0800ACA4` | (main; reads from a DIFFERENT queue) |
 | `command_dispatch_thread` | `0x0800BCAC` | Reads notify-queue messages, dispatches by `msg.byte[0]` (= channel) via inline jump table at `0x0800BCE2`. IR events arrive here. |
 
-The IR-decoder calls `notify(cmd_id, value)` with the cmd_id encoding which button was pressed. **The complete IR-to-cmd_id map has been recovered via static disasm of the command-dispatcher's case handlers** — see `IR_CODES.md`. Headline: Power = cmd_id 2 (★ verified live), 4 sources = cmd_id 4 with sub-param 0–3, 3 modes = cmd_id 1 with sub-param 1–3, vol/bass = cmd_ids 11–14.
+The IR-decoder calls `notify(cmd_id, value)`. **IR channel = cmd_id 12**, then a second-level sub-dispatch at `0x0800BF54` indexes on `value byte 0`. Power = `notify(12, 0x0201)` (sub=1, byte1=2 → `0x0800BF90` toggle handler). See `IR_CODES.md` for the full sub-handler table.
+
+### Shared dispatch helper at `0x080108E2`
+
+Called by `bl` from each dispatch site; the inline table is the bytes immediately after the BL. **First byte of the inline table is the LIMIT (max valid index), case offsets start at byte 1.** Target = `LR_v + offset_byte * 2`. This LIMIT-byte convention is the cause of the initial off-by-one in the IR mapping — easy to miss because it looks like just another offset byte.
 
 ### Key hardware-pin mappings (★ verified)
 

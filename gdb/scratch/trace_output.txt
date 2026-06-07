@@ -1,0 +1,16 @@
+0x08010ab6 in ?? ()
+
+=== Bar state at start ===
+PC=0x08010AB6  state[0..7] = 4 11 0 2 1 0 5 1
+Breakpoint 1 at 0x800beda
+Note: automatically using hardware breakpoints for read-only addresses.
+Breakpoint 2 at 0x800bedc
+Breakpoint 3 at 0x800bf90
+Breakpoint 4 at 0x800c32c
+
+>>> Injecting notify(13, 0x0201) <<<
+★ HIT 0x0800BEDC  (no-LIMIT interpretation = IR sub-dispatch)
+★ HIT 0x0800BF90  (sub=1 power-toggle handler!)
+★ HIT 0x0800C32C  (source-gated handler entry)
+
+Program received signal SIGTRAP, Trace/breakpoint trap.

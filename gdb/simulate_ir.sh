@@ -1,83 +1,70 @@
 #!/usr/bin/env bash
-# simulate_ir.sh — simulate an IR-remote button press by calling notify(cmd_id, value)
-# directly from GDB, bypassing the IR decoder entirely.
+# simulate_ir.sh — simulate any IR-remote button via notify(13, packed).
 #
-# Works against any fw_22+ binary (notify() is unchanged across them, and we use
-# the same BKPT-trampoline trick as switch_mode.sh — no firmware modification needed).
+# Complete mapping recovered from the IR-decoder lookup table at 0x080116A0
+# and verified end-to-end for IR-power via fw_29's notify-trampoline.
 #
-# The bar's command-dispatch task picks up the message naturally and routes it through
-# the same case handlers an IR press would. Listen to the bar's response to confirm
-# the cmd_id ↔ button mapping in IR_CODES.md.
+# All IR buttons dispatch through cmd_id=13 with a packed value:
+#     packed = (press_tag << 8) | button_id
+# press_tag = 2 for a normal single press; 4/6/8/11/12 for various hold states.
 #
 # Usage:
-#   ./simulate_ir.sh <button>
-#   ./simulate_ir.sh raw <cmd_id> [value]    -- send notify(cmd_id, value) directly
+#   ./simulate_ir.sh <button>          -- e.g. power, mute, volUp
+#   ./simulate_ir.sh raw <cmd> <val>   -- arbitrary
 #
-# Buttons (confidence ★ = strong inference / ★★★ = verified live):
-#   power                              cmd_id=2,  value=0      ★★★ verified
-#   src_opt | src_aux | src_hdmi | src_bt   cmd_id=4, value=0/1/2/3   ★★
-#   mode_music | mode_movie | mode_voice    cmd_id=1, value=1/2/3     ★
-#   vol_up | vol_down                  cmd_id=11/12, value=1    ★ (uncertain)
-#   bass_up | bass_down                cmd_id=13/14, value=1    ★ (uncertain)
+# CAVEAT: cmd_id=13's handler at 0x0800C348 exits when source != 1. With the
+# bar on source=2 (Toslink) the dispatched IR button is a no-op past the
+# initial state check. To see effects of injected presses, switch the bar
+# to source=1 first (mechanism not yet known via GDB).
 
 set -e
 
+# button_id table (matches the firmware's table at 0x080116A0)
+declare -A BUTTON=(
+    [power]=1     [mute]=2       [hdmiIn]=3     [btIn]=4
+    [auxIn]=5     [optIn]=6      [bassUp]=7     [bassDown]=8
+    [volUp]=9     [volDown]=10   [modeExtend]=11
+    [modeMusic]=12 [modeMovie]=13 [modeVoice]=14
+)
+
 case "${1:-}" in
-    power)        cmd=2;  val=0;  desc="Power toggle  (★★★ verified)" ;;
-    # 4 sources — LED color confirms (Opt=Purple, AUX=Green, HDMI=White, BT=Blue)
-    src_opt)      cmd=4;  val=0;  desc="Source Optical → expect Purple LED" ;;
-    src_aux)      cmd=4;  val=1;  desc="Source AUX     → expect Green LED" ;;
-    src_hdmi)     cmd=4;  val=2;  desc="Source HDMI    → expect White LED" ;;
-    src_bt)       cmd=4;  val=3;  desc="Source BT      → expect Blue LED" ;;
-    # 4 modes (the 4-way sub-dispatch in case 1)
-    mode_music)   cmd=1;  val=1;  desc="Mode Music     (★★ inferred)" ;;
-    mode_movie)   cmd=1;  val=2;  desc="Mode Movie     (★★ inferred)" ;;
-    mode_voice)   cmd=1;  val=3;  desc="Mode Voice     (★★ inferred)" ;;
-    mode_extend)  cmd=1;  val=4;  desc="Mode Extend (stereo widening) (★★ inferred — NEW)" ;;
-    # Uncertain — try and listen
-    mute)         cmd=0;  val=0;  desc="Mute? (★ candidate — cmd_id 0 also possible)" ;;
-    vol_up)       cmd=11; val=1;  desc="Vol+  (★  guess — listen)" ;;
-    vol_down)     cmd=12; val=1;  desc="Vol-  (★  guess)" ;;
-    bass_up)      cmd=13; val=1;  desc="Bass+ (★  guess)" ;;
-    bass_down)    cmd=14; val=1;  desc="Bass- (★  guess)" ;;
     raw)
         cmd="${2:?need cmd_id}"
         val="${3:-0}"
-        desc="raw cmd_id=$cmd value=$val"
+        desc="raw notify(cmd_id=$cmd, value=$val)"
         ;;
-    *)
+    "")
         cat <<EOF >&2
 Usage: $0 <button>
+       $0 raw <cmd_id> <value>
 
-Verified / strong-inference:
-  power                                       -- toggle bar standby/active
-  src_opt | src_aux | src_hdmi | src_bt     -- pick source (LED color confirms!)
-  mode_music | mode_movie | mode_voice | mode_extend  -- pick audio mode (4 modes)
-
-Guesswork (listen / observe to confirm):
-  mute
-  vol_up | vol_down
-  bass_up | bass_down
-
-Experimental:
-  raw <cmd_id> [value]                        -- post notify(cmd_id, value) directly
-
-Examples:
-  $0 power                                     -- toggle (verified)
-  $0 src_hdmi                                  -- LED should turn White
-  $0 src_aux                                   -- LED should turn Green
-  $0 mode_extend                               -- stereo widening (newly added)
-  $0 raw 10 1                                  -- try cmd_id 10 with value 1
-  $0 raw 3 0                                   -- try unmapped cmd_id 3
+Buttons (id passed as value byte 0, tag=2 as byte 1):
 EOF
+        for name in power mute hdmiIn btIn auxIn optIn bassUp bassDown \
+                   volUp volDown modeExtend modeMusic modeMovie modeVoice; do
+            printf "  %-12s  notify(13, 0x02%02X)\n" "$name" "${BUTTON[$name]}" >&2
+        done
+        echo "" >&2
+        echo "Or: $0 raw 13 0x0201  (= power, explicit)" >&2
         exit 1
+        ;;
+    *)
+        name="$1"
+        id="${BUTTON[$name]:-}"
+        if [ -z "$id" ]; then
+            echo "Unknown button: $name. Try one of: ${!BUTTON[*]}" >&2
+            exit 1
+        fi
+        cmd=13
+        # press_tag = 2 (normal single press), byte 0 = button_id
+        val=$(( (2 << 8) | id ))
+        desc=$(printf "%s  notify(13, 0x%04X)  (button_id=%d, tag=2)" "$name" "$val" "$id")
         ;;
 esac
 
 GDB=$(command -v gdb-multiarch arm-none-eabi-gdb 2>/dev/null | head -1)
 [ -z "$GDB" ] && { echo "Need gdb-multiarch or arm-none-eabi-gdb in PATH" >&2; exit 1; }
 
-# notify(channel=r0, value=r1) — entry at 0x0800BBDC in fw_22+ binaries.
 NOTIFY_ADDR=0x0800BBDC
 
 "$GDB" -batch -nx -q \
