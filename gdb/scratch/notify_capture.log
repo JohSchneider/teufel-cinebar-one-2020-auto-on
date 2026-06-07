@@ -1,0 +1,40 @@
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x0800f15e in ?? ()
+[stm32f0x.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0xc1000000 pc: 0x080000d4 msp: 0x20001ce8
+[stm32f0x.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0x01000000 pc: 0x08010ab6 psp: 0x200022d8
+Breakpoint 1 at 0x800bbdc
+Note: automatically using hardware breakpoints for read-only addresses.
+
+=== bp at notify armed; press IR-power now ===
+
+[NOTIFY] ch=9 val=0x00000009  lr=0x0800AE4D  r2=0x00090000 r3=0x00000009
+halted: PC: 0x0800bbde
+[NOTIFY] ch=9 val=0x00000009  lr=0x0800AE4D  r2=0x00090000 r3=0x00000009
+halted: PC: 0x0800bbde
+[NOTIFY] ch=9 val=0x00000009  lr=0x0800AE4D  r2=0x00090000 r3=0x00000009
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000003  lr=0x0800B3FF  r2=0x00002000 r3=0x00000000
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000003  lr=0x0800B3FF  r2=0x00002000 r3=0x200002C0
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000003  lr=0x0800B3FF  r2=0x00002000 r3=0x200002B8
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000003  lr=0x0800B3FF  r2=0x00002000 r3=0x200002B0
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000003  lr=0x0800B3FF  r2=0x00002002 r3=0x200002C8
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000003  lr=0x0800B3FF  r2=0x00002002 r3=0x200002D0
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000001  lr=0x0800B3FF  r2=0x00002000 r3=0x00000000
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000001  lr=0x0800B3FF  r2=0x00002000 r3=0x200002D8
+halted: PC: 0x0800bbde
+[NOTIFY] ch=14 val=0x00000001  lr=0x0800B3FF  r2=0x00002000 r3=0x200002D0
+halted: PC: 0x0800bbde
+
+Program received signal SIGINT, Interrupt.
+0x0800bbdc in ?? ()
+[Inferior 1 (Remote target) detached]

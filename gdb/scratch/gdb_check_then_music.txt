@@ -1,0 +1,11 @@
+set confirm off
+set pagination off
+set remotetimeout 60
+target extended-remote localhost:3333
+monitor halt
+printf "=== Current state ===\n"
+printf "PC=0x%08X  LR=0x%08X  R0=0x%08X\n", $pc, $lr, $r0
+printf "state[0..7] = "
+x/8xb 0x200025DC
+printf "(state[0]: 1=standby, 2=active, 3/4=intermediate)\n"
+quit

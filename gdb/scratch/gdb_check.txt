@@ -1,0 +1,14 @@
+set confirm off
+set pagination off
+set remotetimeout 60
+target extended-remote localhost:3333
+monitor halt
+printf "PC=0x%08X  LR=0x%08X  R0=0x%08X  SP=0x%08X\n", $pc, $lr, $r0, $sp
+printf "RAM at 0x20002000 (4 bytes): "
+x/4xb 0x20002000
+printf "state[0..7] = "
+x/8xb 0x200025DC
+printf "IPSR (xpsr lower byte) = "
+output (int)($xpsr & 0xff)
+printf "\n"
+quit

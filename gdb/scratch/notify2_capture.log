@@ -1,0 +1,9 @@
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x0800f15e in ?? ()
+Breakpoint 1 at 0x800bbdc
+Note: automatically using hardware breakpoints for read-only addresses.
+
+Program received signal SIGINT, Interrupt.
+0x0800f15e in ?? ()
+[Inferior 1 (Remote target) detached]

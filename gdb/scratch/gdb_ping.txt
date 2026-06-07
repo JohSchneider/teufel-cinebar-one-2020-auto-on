@@ -1,0 +1,8 @@
+set confirm off
+set pagination off
+set remotetimeout 60
+target extended-remote localhost:3333
+monitor halt
+printf "Connected, PC=0x%08X\n", $pc
+monitor resume
+quit

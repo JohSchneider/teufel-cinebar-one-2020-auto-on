@@ -1,0 +1,9 @@
+set confirm off
+set pagination off
+set remotetimeout 60
+target extended-remote localhost:3333
+monitor reset halt
+printf "After reset: PC=0x%08X\n", $pc
+monitor resume
+printf "Bar booting fw_23 → Music mode will be auto-applied by the wrapper.\n"
+quit

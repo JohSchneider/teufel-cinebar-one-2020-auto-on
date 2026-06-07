@@ -1,0 +1,32 @@
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x08010ab6 in ?? ()
+Breakpoint 1 at 0x800ab00
+Note: automatically using hardware breakpoints for read-only addresses.
+
+========== IR EVENT CAPTURED ==========
+r0 (action arg) = 0x00000001 (1)
+lr (return addr) = 0x0800BFAF
+sp = 0x20000690
+r1=0x00000000 r2=0x20000694 r3=0x0800BF91
+r4=0x200023BC r5=0x00000201 r6=0xFFFFFFFF r7=0x200023E4
+
+Stack (sp..sp+31):
+0x20000690:	0x00000002	0x200002c0	0x00000000	0x08009759
+0x200006a0:	0x0800bcad	0x01000000	0x200006e8	0x00000041
+
+Caller disasm (lr-32 .. lr):
+   0x800bf8f:	b.n	0x800c32c
+   0x800bf91:	ldr	r0, [sp, #0]
+   0x800bf93:	cmp	r0, #2
+   0x800bf95:	bne.n	0x800bf8e
+   0x800bf97:	bl	0x800a9c0
+   0x800bf9b:	cmp	r0, #1
+   0x800bf9d:	beq.n	0x800bfa4
+   0x800bf9f:	cmp	r0, #2
+
+Deleting breakpoint, continuing...
+
+Program received signal SIGTRAP, Trace/breakpoint trap.
+0x0800f15c in ?? ()
+[Inferior 1 (Remote target) detached]

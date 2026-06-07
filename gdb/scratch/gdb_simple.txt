@@ -1,0 +1,11 @@
+set confirm off
+set pagination off
+set remotetimeout 30
+target extended-remote localhost:3333
+monitor halt
+printf "Halted at PC=0x%08X\n", $pc
+printf "state[0..15] = "
+x/16xb 0x200025DC
+monitor resume
+printf "Resumed\n"
+quit

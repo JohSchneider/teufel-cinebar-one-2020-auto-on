@@ -1,0 +1,12 @@
+set confirm off
+set pagination off
+set remotetimeout 60
+target extended-remote localhost:3333
+monitor halt
+printf "Restoring saved state...\n"
+set $pc = 0x08010AB6
+set $lr = 0x08009759
+set $r0 = 0
+printf "Resuming bar with Voice mode applied to DSP\n"
+monitor resume
+quit
