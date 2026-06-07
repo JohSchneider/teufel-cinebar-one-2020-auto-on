@@ -356,7 +356,9 @@ These files in `/tmp/firmware/` capture the state of the work:
 | `optionbyts.txt`              | Option-byte dump (confirms RDP=AA)                        |
 | `pinmap.txt`                  | GPIO pin assignments + app_main boot sequence             |
 | `goal1_candidates.txt`        | Pre-GDB candidate analysis                                |
-| `gdb_watchpoint_recipe.txt`   | Live-debug recipe                                         |
+| `gdb/README.md`               | GDB / OpenOCD live-debug recipes + helper-script docs     |
+| `gdb/switch_mode.sh`          | Local script to switch audio mode (Music/Movie/Voice)     |
+| `gdb/trace_modes.gdb`         | GDB script: capture all DSP writes for Music/Movie/Voice  |
 | `mylog.txt`                   | User's GDB session log (the breakthrough)                 |
 | `teufel_remote.lircd.conf`    | LIRC config with IR codes (NEC protocol)                  |
 | `SOLUTION.md`                 | Goal #1 patch documentation                               |
