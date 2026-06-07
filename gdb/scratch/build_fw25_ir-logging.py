@@ -28,14 +28,17 @@ import struct
 from pathlib import Path
 
 SRC = Path('/tmp/firmware/firmware_23_music-mode-default.bin')
-DST = Path('/tmp/firmware/firmware_24_ir-logging.bin')
+DST = Path('/tmp/firmware/firmware_25_ir-logging-v2.bin')
 
 FLASH_BASE         = 0x08000000
 NOTIFY_ADDR        = 0x0800BBDC   # function entry — first 8 bytes to overwrite
 NOTIFY_PLUS_8      = 0x0800BBE4   # where shim returns to (after replicating the 4 original instructions)
 SHIM_ADDR          = 0x0801E8C0   # in patch space, after fw_23 wrapper which ends ~0x0801E898
 G_NOTIFY_STRUCT    = 0x200023BC   # value originally loaded by `ldr r4, [pc, #48]`
-LOG_BUF_ADDR       = 0x20003C00   # ring buffer in RAM
+LOG_BUF_ADDR       = 0x20002700   # ring buffer in RAM
+                                  # 0x20002700-0x20002BFF probed empirically: all-zero, between
+                                  # known globals and the RTX5 TCB at 0x20002C00. Safe for ~1.2 KB.
+                                  # fw_24 used 0x20003C00 which collided with stack memory.
 
 # ---- Assembler helpers ----
 

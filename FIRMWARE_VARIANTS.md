@@ -31,7 +31,8 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 | `firmware_13_combo-5min-standby.bin` | 37 | ⏸ Deferred | fw_12 + single-byte timeout reduction. Reaches standby in ~3 min but lands in cyan intermediate state instead of red. Deferred until gating mechanism understood. |
 | `firmware_22_wake-on-spdif.bin` | 86 | ★ ✓ Production (Goal #1 + Goal #2 complete) | Same design as fw_21 but with **2-byte fix to LDR offsets** in the shim. fw_21 had off-by-one in `ldr r5` and `ldr r6` PC-relative offsets — r5 loaded state struct instead of autostandby, r6 loaded autostandby instead of GPIOA->IDR. Bug discovered via GDB confirming shim invocation but silence_seen at 0x20002506 never updated; manual `post_event_type0(2)` via PC manipulation wake the bar, isolating the issue to the shim's reads/writes. Bench-verified 2026-06-06: AC restore auto-boots active; muted source auto-suspends in ~15 min; unmute wakes within ~25 ms. **IR remote no longer needed in normal use.** |
 | `firmware_23_music-mode-default.bin` | +32 from fw_22 | ✓ Experimental (audio mode tuning) | fw_22 + a 24-byte wrapper at `0x0801E880` invoked from both `transition_state` call sites. After every `→active` transition, the wrapper calls `set_audio_mode(0)` to force Music mode (vs whatever the DSP blob defaults to, likely Voice for source 2). Used for A/B testing audio character. `gdb/switch_mode.sh` provides live mode switching on top of this. |
-| `firmware_24_ir-logging.bin` | +64 from fw_23 | ✓ Diagnostic (IR-decoder hunt) | fw_23 + an 8-byte detour at notify (`0x0800BBDC`) → 56-byte logging shim at `0x0801E8C0`. Every `notify(channel, value)` call now records `(channel, caller_lr)` into a 64-entry ring buffer at RAM `0x20003C00`. Used to identify the IR decoder by finding `channel=2` entries (IR-power) and their `lr` (caller's return addr). Read via `gdb/read_ir_log.sh`. Audio behavior identical to fw_23. |
+| ~~`firmware_24_ir-logging.bin`~~ | (deleted) | ✗ Broken | First IR-logging build. Buffer placed at RAM `0x20003C00` — turned out to overlap with active task-stack memory. Caused first-call corruption and IR-decoder/event-loop malfunction (bar appeared alive but unresponsive). Empirical RAM probe found `0x20002700-0x20002BFF` is zero-filled and unused; superseded by fw_25. |
+| ~~`firmware_25_ir-logging-v2.bin`~~ | (deleted) | ✗ Also broken | Same shim design as fw_24 but with buffer moved to `0x20002700` (found "zero" under fw_24's broken-state RAM probe). Still crashed the bar — apparently the "zero" was a yet-unallocated task stack region that gets used later in fw_25's deeper boot. Lesson: RTX5 stacks aren't zeroed at boot, so "all-zero RAM under a broken firmware" doesn't prove "free." Approach blocked until we get the bar's linker map or use a non-RAM logging channel (SWO, semihosting). See task #58. |
 
 ---
 
@@ -218,9 +219,9 @@ printf '\xf0\xb5\x11\x4c\x11\x4d\x20\x78\x02\x28\x02\xd1\xf2\xf7\x7a\xfe\x19\xe0
 
 See `SHIMS.md` for the wrapper's full assembly. Build script: `/tmp/firmware/build_fw_force-mode.py` — takes mode (0/1/2) as arg, can rebuild Music/Movie/Voice variants from fw_22.
 
-### `firmware_24_ir-logging.bin` — Notify() call logging shim ★
+### `firmware_25_ir-logging-v2.bin` — Notify() call logging shim ★
 
-**Behavior**: identical to fw_23 (Music mode forced), plus an inline call to a logging shim on every `notify(channel, value)` invocation. Each call records `(channel, caller_lr)` into a 64-entry ring buffer at RAM `0x20003C00`. Used to find the IR decoder by capturing where `notify(channel=2, ...)` originates (the IR-power button maps to channel 2).
+**Behavior**: identical to fw_23 (Music mode forced), plus an inline call to a logging shim on every `notify(channel, value)` invocation. Each call records `(channel, caller_lr)` into a 64-entry ring buffer at RAM `0x20002700`. Used to find the IR decoder by capturing where `notify(channel=2, ...)` originates (the IR-power button maps to channel 2).
 
 **Mechanism**: 8-byte detour overwrites notify's first 4 instructions; jumps to a 56-byte shim in patch space that replicates the prologue, logs to the ring buffer, then tail-jumps to `notify+8`. No GDB breakpoints needed; bar runs at full speed.
 
@@ -230,11 +231,13 @@ See `SHIMS.md` for the wrapper's full assembly. Build script: `/tmp/firmware/bui
 | `0x0800BBDC` | `f8 b5 0c 4c 0d 46 06 46` | `00 4b 18 47 c1 e8 01 08` | `ldr r3, =shim+1; bx r3` — preserves LR (unlike BL) |
 | `0x0801E8C0` | `ff …` × 56 | 56-byte shim | replicate prologue + log + tail-call notify+8 |
 
-**Ring buffer layout** at `0x20003C00`:
+**Ring buffer layout** at `0x20002700`:
 - offset 0: `u32 idx` (write pointer, wraps at 64)
 - offset 4 + i*8: `u32 channel`, `u32 caller_lr`
 
-Read via `gdb/read_ir_log.sh`. Build script: `/tmp/firmware/build_fw24_ir_logging.py`.
+**Why `0x20002700`?** fw_24 originally placed the buffer at `0x20003C00` which collided with a task's stack memory — the first write corrupted live task state and the bar appeared alive but unresponsive (event_loop stopped processing IR). Empirical RAM probe under fw_24 found `0x20002700–0x20002BFF` is all-zero and sits between known globals (ending ~`0x200026AC`) and the RTX5 TCB at `0x20002C00` (which contains `osRtxInfo` pointer). Safe ~1.2 KB region.
+
+Read via `gdb/read_ir_log.sh`. Build script: `/tmp/firmware/build_fw25_ir-logging.py`.
 
 ---
 

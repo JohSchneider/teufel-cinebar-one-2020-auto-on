@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# read_ir_log.sh — dump the IR-log ring buffer captured by fw_24
+# read_ir_log.sh — dump the IR-log ring buffer captured by fw_25
 #
 # Usage: ./read_ir_log.sh
-#   Halts the bar briefly, reads idx + all 64 entries from 0x20003C00,
+#   Halts the bar briefly, reads idx + all 64 entries from 0x20002700,
 #   pretty-prints non-empty entries, resumes the bar.
 #
-# fw_24 layout:
-#   0x20003C00 : u32 idx (writes 0..63 then wraps)
-#   0x20003C04 + i*8 : u32 channel, u32 lr  — for i = 0..63
+# fw_25 layout:
+#   0x20002700 : u32 idx (writes 0..63 then wraps)
+#   0x20002704 + i*8 : u32 channel, u32 lr  — for i = 0..63
 
 set -e
 GDB=$(command -v gdb-multiarch arm-none-eabi-gdb 2>/dev/null | head -1)
@@ -22,13 +22,13 @@ target extended-remote :3333
 monitor halt
 
 printf "==== IR-log buffer dump ====\n"
-printf "idx (raw) = %u\n", *(unsigned*)0x20003C00
+printf "idx (raw) = %u\n", *(unsigned*)0x20002700
 
 # 64 entries, 8 bytes each = 128 words after the idx
 # Print as channel + lr columns
 set $i = 0
 while $i < 64
-  set $entry = (unsigned*)(0x20003C04 + $i * 8)
+  set $entry = (unsigned*)(0x20002704 + $i * 8)
   set $ch  = $entry[0]
   set $lr  = $entry[1]
   if $ch != 0xffffffff

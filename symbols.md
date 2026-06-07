@@ -127,6 +127,18 @@ Confidence legend:
 | `0x0800CAA0`  | ★★★  | `write_dsp_register`              | `int write_dsp_register(uint32_t reg_24b, uint32_t val_24b)`. Builds a 6-byte buffer (3-byte BE addr + 3-byte BE value) and calls `0x0800FBC4` (mutex-guarded I²C TX). DSP runtime slave addr = `0xB2` (= 7-bit `0x59`). **56 call sites** in stock firmware. |
 | `0x0800FBC4`  | ★★    | `i2c2_mutex_tx`                   | Generic mutex-guarded I²C2 write. Pushes I²C2 mutex handle, calls `HAL_I2C_Master_Transmit @ 0x0800D93C`. |
 
+### State-struct readers (4 small accessors at 0x0800A9A8 onwards)
+
+Tiny one-shot bx-lr functions; each loads a literal struct ptr and reads one byte. They're called frequently from the command-dispatcher's case handlers, so identifying them was the key to mapping IR cmd_ids.
+
+| Address | Returns | vEEPROM key (if any) |
+|---|---|---|
+| `0x0800A9A8` | `state[+3]` = source select | 0x1111 |
+| `0x0800A9B4` | `state[+2]` | — |
+| `0x0800A9C0` | `state[+0]` = power state (1=standby, 2=active, 3/4=transitioning) | — |
+| `0x0800A9CC` | `state[+4]` | 0x4444 |
+| `0x0800A9D8` | `state[+1]` = volume | 0x2222 |
+
 ### Notify → command-dispatch path
 
 `notify(channel, value)` queues `{channel byte, value u32}` messages onto a queue stored at `*(g_notify_struct+12) = *(0x200023C8)`. Two consumers:
@@ -136,7 +148,7 @@ Confidence legend:
 | `event_loop_thread` | `0x0800ACA4` | (main; reads from a DIFFERENT queue) |
 | `command_dispatch_thread` | `0x0800BCAC` | Reads notify-queue messages, dispatches by `msg.byte[0]` (= channel) via inline jump table at `0x0800BCE2`. IR events arrive here. |
 
-The IR-decoder calls `notify(channel ∈ 2..8, ...)` with the channel encoding which button was pressed. The channel-to-button map is unknown; fw_24 captures it via Shim 4 + `gdb/read_ir_log.sh`.
+The IR-decoder calls `notify(cmd_id, value)` with the cmd_id encoding which button was pressed. **The complete IR-to-cmd_id map has been recovered via static disasm of the command-dispatcher's case handlers** — see `IR_CODES.md`. Headline: Power = cmd_id 2 (★ verified live), 4 sources = cmd_id 4 with sub-param 0–3, 3 modes = cmd_id 1 with sub-param 1–3, vol/bass = cmd_ids 11–14.
 
 ### Key hardware-pin mappings (★ verified)
 
@@ -383,6 +395,8 @@ These files in `/tmp/firmware/` capture the state of the work:
 | `gdb/README.md`               | GDB / OpenOCD live-debug recipes + helper-script docs     |
 | `gdb/switch_mode.sh`          | Local script to switch audio mode (Music/Movie/Voice)     |
 | `gdb/trace_modes.gdb`         | GDB script: capture all DSP writes for Music/Movie/Voice  |
+| `IR_CODES.md`                 | Complete IR-button → cmd_id mapping (static-RE derived)   |
+| `dsp_protocol.md`             | DSP control protocol + vEEPROM + register map             |
 | `mylog.txt`                   | User's GDB session log (the breakthrough)                 |
 | `teufel_remote.lircd.conf`    | LIRC config with IR codes (NEC protocol)                  |
 | `SOLUTION.md`                 | Goal #1 patch documentation                               |

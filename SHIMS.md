@@ -9,7 +9,7 @@ return via `pop {pc}` or tail-call the original target.
 | 1 | Autoboot-to-active | `0x0801E800` | 22 bytes | fw_05, fw_08, fw_12, fw_22, fw_23, fw_24 | `bl 0x0800AE78` @ `0x0800ACAC` redirected | On boot, drive bar to active state and broadcast LED change |
 | 2 | Wake-on-SPDIF wrapper | `0x0801E820` | 84 bytes | fw_22, fw_23, fw_24 | `bl 0x08008D74` (osMessageQueueGet) @ `0x0800ACBC` redirected | In standby idle, detect fiber-lights-up transition and post wake event |
 | 3 | Force-mode wrapper | `0x0801E880` | 24 bytes | fw_23, fw_24 | both `bl transition_state` sites redirected (`0x0801E808`, `0x0800AD12`) | After every `→active` transition, call `set_audio_mode(N)` to override the DSP blob default |
-| 4 | Notify-logging shim | `0x0801E8C0` | 56 bytes | fw_24 only | notify() prologue overwritten in-place at `0x0800BBDC` (detour to shim) | Log every `notify(channel, value)` call's `(channel, caller_lr)` to RAM ring buffer at `0x20003C00` |
+| 4 | ★ Notify-logging shim *(design — fw_24/25 broken)* | `0x0801E8C0` | 56 bytes | (none, both tries crashed) | notify() prologue overwritten in-place at `0x0800BBDC` (detour to shim) | Log every `notify(channel, value)` call's `(channel, caller_lr)` to RAM ring buffer. **Design preserved below for reference; both fw_24 (buf at `0x20003C00`) and fw_25 (buf at `0x20002700`) hit RAM collisions with active task stacks and HardFaulted.** See task #58. |
 
 Patch space is 4-byte aligned and ends well before flash limit. Plenty of room for additional shims if needed.
 
@@ -247,7 +247,7 @@ The `ldr`+`bx` sequence preserves LR (unlike a BL would), so when Shim 4 chains 
 0x0801E8C4: mov   r5, r1                     ; 46 0d   ; (original mov r5, r1)
 0x0801E8C6: mov   r6, r0                     ; 46 06   ; (original mov r6, r0)
 ;; --- logging start ---
-0x0801E8C8: ldr   r0, [pc, #36]              ; 48 09   ; r0 = 0x20003C00 (log buf)
+0x0801E8C8: ldr   r0, [pc, #36]              ; 48 09   ; r0 = 0x20002700 (log buf)
 0x0801E8CA: ldr   r1, [r0, #0]               ; 68 01   ; r1 = idx
 0x0801E8CC: cmp   r1, #63                    ; 29 3F
 0x0801E8CE: bls.n  no_wrap                   ; d9 01
@@ -268,15 +268,15 @@ The `ldr`+`bx` sequence preserves LR (unlike a BL would), so when Shim 4 chains 
 0x0801E8E8: bx    r2                         ; 47 10   ; jump (LR untouched)
 ;; literal pool:
 0x0801E8EC: .word 0x200023BC                 ; g_notify_struct (orig ldr r4 target value)
-0x0801E8F0: .word 0x20003C00                 ; log buffer base
+0x0801E8F0: .word 0x20002700                 ; log buffer base
 0x0801E8F4: .word 0x0800BBE5                 ; notify+8 with Thumb bit
 ```
 
-**RAM ring buffer** at `0x20003C00`:
+**RAM ring buffer** at `0x20002700`:
 - offset 0: `u32 idx` (write pointer, wraps at 64; bounded by `cmp #63; bls; movs r1, #0`)
 - offset 4 + i*8: `u32 channel; u32 caller_lr` for entry i ∈ [0, 64)
 
-Total RAM used: 4 + 64×8 = **516 bytes**. Buffer is in the high RAM region (STM32F072CBT6 has 16 KB ending at `0x20004000`); 516 bytes at `0x20003C00` ends at `0x20003E04` — within RAM, and the user has not reported issues with stack collision at this address.
+Total RAM used: 4 + 64×8 = **516 bytes**. Buffer is placed in a known-empty region between known globals (ending ~`0x200026AC`) and the RTX5 TCB at `0x20002C00`. Empirically verified zero-filled at `0x20002700–0x20002BFF` under live firmware. (fw_24 originally placed it at `0x20003C00` and collided with a task's stack — fw_25 fixes this.)
 
 **Idx initialization**: not explicitly zeroed; if the RAM happens to hold a value > 63 at boot, the first call's bound check resets idx to 0. So the buffer is self-healing on cold boot.
 
@@ -314,4 +314,4 @@ When the user's `firmware_02_swd-write-test.bin` wrote `DEADBEEF` at `0x1FF00` t
 |---------|------:|-------------|--------|
 | `0x20002506` | 1 | `silence_seen` flag (1 = silence observed in standby; 0 = haven't seen silence yet) | Shim 2 |
 | `0x20002000` | 2 | BKPT trampoline used by `switch_mode.sh` (NOT firmware-resident; written by GDB only) | gdb/switch_mode.sh |
-| `0x20003C00` | 516 | IR log: `u32 idx` + 64 entries × `(u32 channel, u32 caller_lr)` | Shim 4 |
+| `0x20002700` | 516 | IR log: `u32 idx` + 64 entries × `(u32 channel, u32 caller_lr)` | Shim 4 |
