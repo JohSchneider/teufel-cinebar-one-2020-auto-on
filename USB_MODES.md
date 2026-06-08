@@ -63,6 +63,35 @@ With **only T211 HIGH** (no PA0 trigger), the mux switches but STM32 USB stays d
 | **USBEN ever gets set by firmware** | ✗ **Conclusively NO** — exhaustive search found no code path that sets RCC_APB1ENR bit 23 |
 | Manually forcing USBEN via GDB causes MSC enumeration | ✗ live — host still sees `2cc2:0005` audio device; USB peripheral (CNTR/BCDR/DADDR) was never initialized either |
 
+## Update 2026-06-09: re-examining the PA0/USB area more carefully
+
+User pushback on "EEPROM holds CEC opcodes" prompted a closer look at the USB descriptor area + `main()`'s init path. Key new findings:
+
+- **`main()` at `0x080039D4` actually calls the USB stack init at boot**: `bl 0x080030B0` at `0x08003AD0` triggers the descriptor-struct setup at `0x08003254`. That code writes `Instance = 0x40005C00` (USB peripheral base) into a RAM struct at `0x20001098`, sets endpoint count = 8, max packet = 64, and registers callbacks. **The USB scaffold IS reached at boot, not just sitting dead.**
+- `main()` has a **wait loop at `0x08003AB2`** that polls **PA1** until HIGH before calling the USB init. PA1 was previously tagged "IR receiver" (idle HIGH, pulses LOW for IR signals) — but the placement in a "wait for X then init USB" pattern suggests it might also (or instead) be **USB VBUS detect**. PA1 idle-HIGH explains why the wait passes immediately in normal operation; the VBUS hypothesis would explain why the wait is there in the first place.
+- **The descriptor getters at `0x08003480`/`0x0800348C`/`0x08003498` have ZERO direct `bl` references** — they're called only via a function-pointer table somewhere in the USB class layer (likely the MSC class descriptor handler).
+- **The EEPROM check in service mode is NOT for USB MSC.** The user was right to push back. The PA0-LOW service-mode chain initializes CEC + I²C2, validates an EEPROM record on I²C2, and runs a CEC operation. It does NOT touch USBEN or the USB peripheral state. The EEPROM presumably holds CEC config (Physical Address, Logical Address, Vendor ID, OSD Name), not USB-MSC opcodes.
+- **The ONE missing piece for MSC enumeration is the USBEN bit.** Everything else — descriptors, IRQ handler, struct init in `main()`, SCSI strings, FAT12 image — is in place. The firmware just never sets `RCC_APB1ENR` bit 23. An exhaustive search (every `lsls rd, rd, #23`, every `(K << M) == 0x800000` combo) confirms: **no instruction in this firmware enables USBEN**. The three `lsls #23` hits in the binary are all floating-point/fixed-point math (`r6 += 1<<23` for IEEE-754 implicit-1 bit manipulation), not RCC writes.
+
+### Why USBEN might have been deliberately removed (speculation)
+
+The dense USB scaffold + the fact that the descriptors PID is `0x0004` (matching a real MSC class device) suggests Teufel had a working MSC at some earlier development stage. The clock-enable line being absent in shipped firmware could mean:
+
+- The MSC feature was intentionally disabled before release (perhaps via a `#if 0` around `__HAL_RCC_USB_CLK_ENABLE()` in source)
+- The MSC enable was conditioned on something this firmware revision doesn't expose (a config #define for a different SKU variant)
+- It was left out by accident — the code that USED to call `__HAL_RCC_USB_CLK_ENABLE` is gone but the rest of the scaffold remained
+
+### The "USBEN forced" experiment
+
+A possible **fw_37** would be: take fw_36 (the experimental MSC-test build with PA0+EEPROM bypass) and additionally **patch a `RCC_APB1ENR |= (1<<23)` write somewhere in `main()` before the USB init**. The cleanest place would be just before the `bl 0x080030B0` at `0x08003AD0`. Needs ~8 bytes of patch (5-6 instructions: load APB1ENR, OR bit 23, store back, readback).
+
+With that, MSC enumeration MIGHT work if:
+1. USB clock source (PLL or HSI48 at 48 MHz) is correctly configured by `SystemInit`
+2. The USB peripheral init at `0x08003254` and downstream really completes the BCDR.DPPU / DADDR.EF / endpoint setup
+3. The mux is switched (T211 HIGH externally)
+
+If the user wants to push this further, this is the next logical experiment. It's a comprehensive test of "the only thing missing is USBEN."
+
 ## Final assessment: MSC is dead code
 
 After two days of static RE and live bench validation including a successful fw_36 (PA0+EEPROM-bypass) test:
