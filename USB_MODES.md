@@ -92,9 +92,30 @@ User's question, worth recording: if MSC is dead code, why does the PCB include 
 
 Most likely a combination of #1 and #2.
 
-## The CEC hypothesis (under investigation — task #65)
+## The CEC hypothesis — CONFIRMED (2026-06-09, task #65)
 
-The service-mode init enables **CECEN (`RCC_APB1ENR` bit 30)** alongside I²C2EN, while never enabling USBEN. Plus the firmware has named RTX threads "CEC RX" and "CEC TX" (strings at `0x0801E5E0/8`). Working hypothesis: the actual "service mode" purpose is HDMI-CEC-driven (factory test station sends CEC commands over HDMI-ARC), not USB-MSC. The EEPROM "record dispatch" loop at `0x0800ED5A-0x0800ED7C` (type 3-bit / length 5-bit field per record) may be a CEC opcode dispatcher, not USB MSC config. If verified, this puts the final nail in the MSC coffin: service mode is real, but for a different bus entirely.
+Static analysis of the function at `0x0800EE9C` (called from the PA0-LOW peripheral-init chain via `0x0800F154 → 0x0800F130`) confirmed it is **CEC peripheral initialization**:
+
+- Enables GPIOA clock + configures PA5 as AF1
+- Sets **CECEN (RCC_APB1ENR bit 30)** via `lsls r0, r4, #18` where `r4 = 0x40021000` → `0x40000000` = exactly the CECEN bit (compiler trick that avoids the literal pool)
+- Toggles APB1RSTR bit 30 to reset the CEC peripheral
+- Initializes a CEC state struct at `0x200026F8` with `[+0] = 0x40007800` (CEC peripheral base)
+- Calls the same `0x0800D064` / `0x0800D1EC` helpers that **`service_inner(r0=5)` calls** ← this is the cross-link
+- Enables NVIC **IRQ 30 = CEC_CAN_IRQn** at priority 1
+
+That means `service_inner(r0=5)` is a CEC operation working on the same state struct at `0x200026F8`. The "USB-driver-shaped" helpers (`0x0800D064`, `0x0800D1EC`, `0x0800D284`, `0x0800D0E0`) are ST HAL CEC functions, not USB driver functions. The buffer at state+0x88 is the CEC RX/TX message buffer. The EEPROM dispatch records (type 3-bit / length 5-bit) are CEC opcode entries.
+
+**The service mode is HDMI-CEC-driven.** The factory programming/test station likely connects via the HDMI-ARC port, sends CEC opcodes, and uses the EEPROM-loaded opcode dispatch table to drive the bar's behavior (including possibly firmware programming via CEC vendor-specific opcodes).
+
+### Curious wrinkle: vector table
+
+Vector table slot 30 (CEC_CAN_IRQn) points to `Default_Handler` (the `0x080000E6` infinite-loop trap), while only the USB slot 31 has a real handler. So if the CEC peripheral actually raised an interrupt with this static vector table, the bar would HardFault. Possibilities:
+
+1. CEC runs entirely in polled mode (the "CEC RX" / "CEC TX" named threads poll the CEC registers); the NVIC IRQ enable in `cec_peripheral_init` is harmless leftover code
+2. The vector table is replaced at runtime via `SCB->VTOR` (RTX5 supports this)
+3. CEC interrupt-enable bits in `CEC_CFGR` are never set, so no interrupt ever fires
+
+Hasn't been verified live, but the bar's normal operation (no random HardFaults) is consistent with one of these.
 
 ## Cross-references
 
