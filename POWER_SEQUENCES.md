@@ -189,7 +189,7 @@ Approximate wall-clock: ~250 ms (the 200 ms mute fade dominates).
 | After PC15 LOW | 0 | 0 | 0 | 0 |
 | Settled (standby) | 0 | 0 | 0 | 0 |
 
-### Pin states during SLEEP under fw_22 (current production)
+### Pin states during SLEEP under fw_22 (over-conservative; previous production)
 
 | Step | PA2 | PB7 | PC15 | PF0 |
 |---|---:|---:|---:|---:|
@@ -201,21 +201,31 @@ Approximate wall-clock: ~250 ms (the 200 ms mute fade dominates).
 | PC15 LOW NOP | 1 | 1 | 1 | 0 |
 | Settled (fw_22 standby) | **1** | **1** | **1** | **0** |
 
-→ DSP IC stays *powered* (PB7 HIGH), held in reset (PF0 LOW). This matches the observed behavior where the DSP is "responsive" / draws current during standby.
+→ DSP IC stays *powered* (PB7 HIGH), held in reset (PF0 LOW). This matches the observed behavior where the DSP is "responsive" / draws current during standby — the cause of task #59.
 
-### Pin states during SLEEP under fw_33 (proposed: keep only Toslink alive)
+### Pin states during SLEEP under fw_34 (NEW production candidate)
+
+Bench-verified 2026-06-08 (direct GPIO toggling):
+- PC15 is the **sole** Toslink-rail master. PC15 LOW → 3V drops to 0.8V.
+- PA2 is unrelated to the Toslink rail. PA2 LOW alone: no effect on rail or audio.
+- PB7 is the DSP power. PB7 LOW alone stops audio (Toslink rail unaffected).
+
+fw_34 therefore NOPs **only** the PC15-LOW write at `0x0A836`, restoring the
+PA2-LOW and PB7-LOW writes at `0x0A81A` and `0x0A81E`.
 
 | Step | PA2 | PB7 | PC15 | PF0 |
 |---|---:|---:|---:|---:|
 | Before (active) | 1 | 1 | 1 | 1 |
-| `spdif_subsystem_init` NOP | 1 | 1 | 1 | 1 |
-| `0x800c48c` (restored, PB7 LOW) | 1 | **0** | 1 | 1 |
-| After PF0 LOW | 1 | 0 | 1 | 0 |
-| After I²C1 shutdown | 1 | 0 | 1 | 0 |
-| PC15 LOW (restored) | 1 | 0 | **0** | 0 |
-| Settled (fw_33 standby) | **1** | **0** | **0** | **0** |
+| `spdif_subsystem_init` (restored, PA2 LOW) | **0** | 1 | 1 | 1 |
+| `0x800c48c` (restored, PB7 LOW = DSP power off) | 0 | **0** | 1 | 1 |
+| After PF0 LOW | 0 | 0 | 1 | 0 |
+| After I²C1 shutdown | 0 | 0 | 1 | 0 |
+| PC15 LOW NOP (PC15 stays HIGH) | 0 | 0 | **1** | 0 |
+| Settled (fw_34 standby) | **0** | **0** | **1** | **0** |
 
-→ Toslink rail stays up (PA2 HIGH) for wake-on-SPDIF, but DSP/amp powered down (PB7 LOW, PC15 LOW). Pending bench verification (does Toslink really only need PA2, or do PB7/PC15 also contribute?).
+→ Toslink rail stays up (PC15 HIGH) for wake-on-SPDIF. DSP IC fully powered down (PB7 LOW) AND held in reset (PF0 LOW). PA2 LOW too (whatever it does — doesn't affect audio or Toslink).
+
+**Bench-verified 2026-06-08**: bar auto-suspends after silence and auto-wakes when Toslink resumes — wake-on-SPDIF path still works on the leaner NOP set.
 
 ---
 
@@ -237,10 +247,26 @@ Approximate wall-clock: ~250 ms (the 200 ms mute fade dominates).
 
 ---
 
-## Why DSP appears "responsive" in standby (the task #59 puzzle)
+## Why DSP appears "responsive" in standby (the task #59 puzzle, resolved)
 
-In **stock firmware**, all four pins (PA2/PB7/PC15/PF0) go LOW during sleep, so the DSP IC's power input is removed and the chip draws ~0 mA.
+In **stock firmware**, all four pins (PA2/PB7/PC15/PF0) go LOW during sleep, so the DSP IC's power input (PB7) is removed and the chip draws ~0 mA.
 
-In **fw_22**, three of those LOW writes are NOPed (PA2/PB7/PC15) to keep the Toslink rail alive for wake-on-SPDIF. The unintended side effect: **PB7 stays HIGH**, so the DSP IC's power rail stays on. PF0 LOW still asserts the DSP's hardware reset, which halts the DSP CPU — but the chip itself remains powered (idle current draw, internal voltage references still on, possibly leakage to other rails).
+In **fw_22**, three of those LOW writes were NOPed (PA2/PB7/PC15) on the working hypothesis that all three were required to keep the Toslink rail alive. We had concluded this because:
 
-**fw_33** restores the PB7 LOW and PC15 LOW writes (only PA2 stays NOPed), on the hypothesis that PA2 alone is the Toslink-rail master. Pending bench verification.
+- `fw_06` (NOP PC15 only) → rail dropped
+- `fw_07` (NOP PB7 + PC15) → rail dropped
+- `fw_08` (NOP PA2 + PB7 + PC15) → rail stayed up
+
+The flaw in that experiment: the standby path executes the LOW writes **sequentially** (PA2 → PB7 → PF0 → I²C1-down → PC15). If PA2 LOW or PB7 LOW had **independent** effects (which we'd implicitly tested for null, but never bisected), the rail would have already dropped before we reached the NOPed PC15-LOW write — and we couldn't tell whether PC15 even mattered.
+
+**Bench bisection 2026-06-08 (GDB direct GPIO toggle, bar in active state)** broke the confound by isolating each pin:
+
+| Toggle | Toslink Vcc | Audio |
+|---|---:|---|
+| PA2 LOW alone (PB7=PC15=HIGH) | 3 V (unchanged) | still playing |
+| PB7 LOW alone (PA2=PC15=HIGH) | 3 V (unchanged) | **stops** |
+| PC15 LOW alone (PA2=PB7=HIGH) | **0.8 V** | stops (cascade) |
+
+→ PC15 is the sole Toslink-rail master. PB7 is the DSP power. PA2 is something unrelated to either (function still unknown).
+
+The fix is **fw_34**: NOP only the PC15-LOW write at `0x0A836`. PA2 and PB7 LOW writes fire normally, so the DSP actually powers down in standby while Toslink stays alive for wake-on-SPDIF.

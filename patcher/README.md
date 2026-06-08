@@ -42,7 +42,7 @@ can decide whether to proceed.
 
 ## Step 2 — Patch
 
-Two variants are available:
+Three variants are available — **`build_fw34_from_dump.py` is the recommended productive variant**:
 
 ### `build_fw05_from_dump.py` — Goal #1: auto-boot to active
 
@@ -56,21 +56,38 @@ python3 build_fw05_from_dump.py mydump.bin firmware_05.bin
 26 bytes changed across 2 sites. Reversible by reflashing your original
 dump.
 
-### `build_fw22_from_dump.py` — Goal #1 + Goal #2: + wake-on-SPDIF
+### ★ `build_fw34_from_dump.py` — Goal #1 + Goal #2 (recommended)
 
-Includes everything from fw_05, plus:
-- Audio rail stays powered in standby (so SPDIF can be sensed)
-- A polling shim watches PA4 in the idle loop
-- Bar auto-wakes within ~25 ms of audio returning after silence
-- Bar auto-suspends after ~15 min of silence (uses the chip's own
-  SPDIF carrier-detect hysteresis)
+Auto-on + wake-on-SPDIF + auto-suspend, with the **DSP actually powered
+down in standby** (not just held in reset). This is the productive
+variant. Net effect:
+
+- Audio plays whenever your source is awake, no IR remote needed
+- Bar wakes within ~25 ms of audio returning after silence
+- Bar auto-suspends after ~15 min of silence
+- In standby, the DSP IC's power rail is OFF (not just `RESET`-held), so
+  the bar's standby current draw is materially lower
+
+```bash
+python3 build_fw34_from_dump.py mydump.bin firmware_34.bin
+```
+
+114 bytes changed across 5 sites.
+
+### `build_fw22_from_dump.py` — Goal #1 + Goal #2 (legacy / over-conservative)
+
+The original wake-on-SPDIF variant. Functionally complete, but NOPs three
+"→ LOW" writes in the standby path on the over-broad hypothesis that all
+three were needed for the Toslink rail. Bench bisection later showed only
+PC15 was the rail master — so this variant leaves PB7 HIGH in standby,
+which keeps the DSP IC powered (just held in reset). Prefer fw_34 unless
+you specifically need fw_22's behaviour.
 
 ```bash
 python3 build_fw22_from_dump.py mydump.bin firmware_22.bin
 ```
 
-122 bytes changed across 6 sites. The IR remote is no longer needed for
-day-to-day use — the bar follows your source.
+122 bytes changed across 6 sites.
 
 ## Step 3 — Flash
 

@@ -372,16 +372,16 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 | ----- | ------------- | --------------------------------- |
 | **PA0** | **Input no-pull** | **★ Service-mode trigger.** Configured by `HAL_GPIO_Init` at `0x0800F0FC`. Reads HIGH idle. When pulled LOW, the firmware enters a polling+EEPROM-handshake function at `0x0800ED10` that reads an I²C EEPROM at device addr 0x50 (8-bit 0xA0) on I²C1 — see `USB_MODES.md`. Hypothesis: this is the entry into the USB-MSC firmware-update persona. **Not yet bench-verified.** |
 | PA1   | Input VeryHigh | **IR receiver** (best candidate based on speed setting) |
-| **PA2** | **Output_PP**   | **★ SPDIF buffer / Toslink load-switch ENABLE.** Driven HIGH in active state (3V on Toslink Vcc), LOW in standby (0.8V leakage). Set LOW by `spdif_subsystem_init` at `0x080103dc`. Empirically confirmed via Recipe D ODR snapshots. |
+| **PA2** | **Output_PP**   | **Function unknown.** Goes HIGH in active, LOW in standby. **Bench-verified 2026-06-08**: PA2 LOW alone (with PB7, PC15 held HIGH) has NO observable effect — audio keeps playing, Toslink Vcc stays at 3V. Previous claim that PA2 was the Toslink load-switch was wrong; the active/standby correlation with Toslink Vcc was coincidental (PC15 is the real master). Possible roles: BT module power gate, indicator, or unused-and-driven-for-symmetry. |
 | **PA3** | **Input**     | Reads always LOW (dead-wired). `is_audio_active()` at `0x0801041C` reads this but the result is meaningless. The SOT-23-5 chip with single trace to PA3 doesn't reach PA3 with usable signal in this firmware's configuration. |
 | **PA4** | UNCONFIGURED  | ★ Actual SPDIF data carrier (toggles at ~5 MHz biphase rate when audio playing). Firmware doesn't configure it (sits in reset-default input mode) but the Toslink module drives it. firmware_17 polls this via direct IDR read. |
 | PA5   | AF_OD AF1     | TIM2_CH1_ETR — possibly audio mute/control PWM |
 | PA8   | Output_OD PU  |                                   |
-| **PB7** | **Output_PP** | Auxiliary, NOT the audio rail despite earlier hypothesis. Pulsed LOW→HIGH during active entry (reset-pulse pattern). NOP'd in firmware_07/08 with no observable effect on Toslink Vcc. |
+| **PB7** | **Output_PP** | **★ DSP-IC power enable** (best guess). Bench-verified 2026-06-08: PB7 LOW alone (with PA2, PC15 held HIGH) IMMEDIATELY stops audio while Toslink Vcc stays at 3V. Consistent with cutting the DSP rail mid-stream — Toslink still receives the SPDIF signal, but the DSP can't process it. HIGH in active, LOW in stock standby. Written by `0x0800C9A0` (called via `0x0800C48C`). |
 | PB11  | AF_OD AF1     | **I2C2_SDA** (the DSP bus)        |
 | PB12  | Output_OD PU  |                                   |
 | PB14  | Output_PP     |                                   |
-| **PC15** | **Output_PP** | Auxiliary signal. Goes HIGH in active, LOW in standby. NOT the Toslink rail gate (firmware_06 confirmed). Possibly drives an indicator or related rail. |
+| **PC15** | **Output_PP** | **★★★ Toslink-receiver load-switch ENABLE.** Bench-verified 2026-06-08 via direct GPIO bisection: PC15 LOW alone drops Toslink Vcc from 3V to 0.8V (audio stops because the receiver loses power). PC15 HIGH = Toslink rail at 3V. **This is the only pin that gates the Toslink rail** — fw_22's PA2 + PB7 NOPs were over-conservative. Written via `GPIO_WriteBit(GPIOC, 0x8000, ...)` at `0x0800A776` (HIGH = wake) and `0x0800A836` (LOW = sleep). |
 | **PF0** | **Output_PP** | **★ DSP reset (active LOW).** Held LOW in standby (DSP held in reset). Goes HIGH ~50ms after rail-up during active entry. |
 
 ---
