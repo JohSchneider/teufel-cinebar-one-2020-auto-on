@@ -114,18 +114,18 @@ Confidence legend:
 | `0x0800CF94`  | ★★★  | `FLASH_PageErase`                 | `void FLASH_PageErase(uint32_t page_addr)`. Generic flash page erase; takes page address in R0. |
 | `0x0800D340`  | ★★★  | `vEEPROM_erase_loop`              | Iterates over vEEPROM pages, calls FLASH_PageErase per page. Page size = 2048 (`1<<11`). |
 
-### DSP control (Renesas D2-92634-LR via I²C2 — PB10/PB11 AF1)
+### DSP control (Renesas D2-92634-LR via I²C1 — PB8/PB9 AF1)
 
 | Address       | Conf | Symbol                            | Signature / notes |
 | ------------- | ---- | --------------------------------- | ----------------- |
-| `0x0800C4EC`  | ★★★  | `dsp_init_dispatcher`             | Called from `transition_state(2)`. Holds DSP reset (PF0=LOW), waits, releases, uploads the 30 KB DSP firmware blob via `0x0800CA70`, then post-init wait. Doesn't call `write_dsp_register` directly. |
+| `0x0800C4EC`  | ★★★  | `dsp_init_dispatcher`             | Called from `transition_state(2)`. Holds DSP reset (PF0=LOW), waits, releases, uploads the 30 KB DSP firmware blob via `0x0800CA70`, then post-init wait. Doesn't call `write_dsp_register` directly. **Note: DSP is on I²C1, not I²C2 (this section's heading "via I²C2" was wrong — corrected 2026-06-09).** |
 | `0x0800C560`  | ★★★  | `set_audio_mode`                  | `void set_audio_mode(uint8_t mode)`. Dispatches `r0 ∈ {0=Music, 1=Movie, 2=Voice}`, writes 12 DSP registers `0x2E–0x39`. See `dsp_protocol.md` for the per-mode value matrix. Only callers in stock firmware: the source-switch handler at `0x0800A664`. fw_23's wrapper at `0x0801E880` adds it after every `→active` transition. |
 | `0x0800C5F4`  | ★★    | per-mode preset constants         | Two 4-byte words: `0x00800001` (the "enable" magic) and `0x00A56208` (the Voice-mode coefficient). Loaded by `set_audio_mode`. |
 | `0x0800C744`  | ★★    | master-output-gain loader         | At boot, reads a value from vEEPROM via `0x0800CF54`, writes it (via `write_dsp_register`) to DSP regs `0xE4–0xE7`. Bench-traced value = `0xFFFFFB` (= -5 in 24-bit signed). Candidate for "patch the amp headroom" experiment (task #60). |
 | `0x0800C7A0`  | ★★★  | bass-or-limiter writer            | Clamps r0 to `[-14, 0]`, persists to vEEPROM, writes to DSP regs `0x0F` and `0xE9`. Called only from event-6 handler (`0x0800A858`) with payload-dependent values {-3, 0, 2}. Either bass-cut or limiter — disambiguation pending. |
-| `0x0800CA70`  | ★★★  | `dsp_blob_uploader`               | `int dsp_blob_uploader(void *buf, size_t len)`. Wrapper for `HAL_I2C_Mem_Write` to DSP slave `0x88` (= 7-bit `0x44`), memory address 0, 16-bit address size. Uploads the 30,661-byte blob at flash `0x08011E48`. |
-| `0x0800CAA0`  | ★★★  | `write_dsp_register`              | `int write_dsp_register(uint32_t reg_24b, uint32_t val_24b)`. Builds a 6-byte buffer (3-byte BE addr + 3-byte BE value) and calls `0x0800FBC4` (mutex-guarded I²C TX). DSP runtime slave addr = `0xB2` (= 7-bit `0x59`). **56 call sites** in stock firmware. |
-| `0x0800FBC4`  | ★★    | `i2c2_mutex_tx`                   | Generic mutex-guarded I²C2 write. Pushes I²C2 mutex handle, calls `HAL_I2C_Master_Transmit @ 0x0800D93C`. |
+| `0x0800CA70`  | ★★★  | `dsp_blob_uploader`               | `int dsp_blob_uploader(void *buf, size_t len)`. Wrapper for `HAL_I2C_Mem_Write` on **I²C1** to DSP slave `0x88` (= 7-bit `0x44`), memory address 0, 16-bit address size. Uploads the 30,661-byte blob at flash `0x08011E48`. |
+| `0x0800CAA0`  | ★★★  | `write_dsp_register`              | `int write_dsp_register(uint32_t reg_24b, uint32_t val_24b)`. Builds a 6-byte buffer (3-byte BE addr + 3-byte BE value) and calls `0x0800FBC4` (mutex-guarded I²C TX on I²C1). DSP runtime slave addr = `0xB2` (= 7-bit `0x59`). **56 call sites** in stock firmware. |
+| `0x0800FBC4`  | ★★    | `i2c1_mutex_tx`                   | Generic mutex-guarded **I²C1** write (was previously mislabeled `i2c2_mutex_tx`). Pushes I²C1 mutex handle, calls `HAL_I2C_Master_Transmit @ 0x0800D93C`. |
 
 ### State-struct readers (4 small accessors at 0x0800A9A8 onwards)
 
@@ -162,7 +162,8 @@ Called by `bl` from each dispatch site; the inline table is the bytes immediatel
 | **PA4** | ★ Actual SPDIF data carrier (firmware doesn't read it) | Reads HIGH (toggling at biphase rate) only in active+plugged+playing; LOW elsewhere |
 | **PC15** | Audio rail enable (HIGH = active, LOW = standby) | `transition_state` writes via `GPIO_WriteBit(GPIOC, 0x8000, val)` at `0x0800A776` (HIGH) and `0x0800A836` (LOW) |
 | **PF0** | DSP reset (active LOW: LOW = held in reset) | `transition_state` writes via `GPIO_WriteBit(GPIOF, 0x0001, val)` at `0x0800A76C`/`0x0800A828` (LOW) and `0x0800A7F0` (HIGH) |
-| **PB11** | I²C2 SDA (AF1) — DSP control bus | configured by `HAL_GPIO_Init` call at `0x0800F068` |
+| **PB8/PB9** | I²C1 SCL/SDA (AF1) — **DSP control bus** | active in stock active mode; GPIOB AFRH bits[7:0] = 0x11 |
+| **PB10/PB11** | I²C2 SCL/SDA (AF1) — **EEPROM / service-mode bus** | reconfigured from input to AF1 by the PA0-LOW service-mode peripheral init (`0x0800F00C`). GPIOB AFRH bits[15:8] = 0x11 after entering service mode. |
 | **PA1** | (?) IR receiver — VeryHigh speed Input | configured by `HAL_GPIO_Init` call at `0x0800B456`; not yet hardware-verified |
 
 ### transition_state side-effect map
@@ -296,6 +297,7 @@ these 8 posters.
 | `0x08003988`  | ★★★  | `USB_IRQHandler`                  | Vector slot 31. Inside, calls `0x080030B0` on USB peripheral events. Only relevant when USB clock is enabled (i.e., MSC-persona active). |
 | `0x080030B0`  | ★★   | `usb_peripheral_init`             | Sets up USB peripheral registers (loaded base from `0x080032B0` = `0x40005C00`). |
 | `0x08003E42`  | n/a  | `fat12_image_base`                | Start of the embedded FAT12 filesystem image (boot sector "MSDOS5.0", volume label "TEUFEL CBO", contains VERSION.TXT). Referenced once from MSC code at file offset 0x52C. |
+| n/a (PCB)     | ★★★  | `T211_mux_sel_pad`                | **USB mux SEL test pad.** HIGH → USB routed to STM32 baseboard side (MSC persona); LOW (default, ~0 V) → USB routed to DSP daughter board (audio class). Bench-verified 2026-06-08: 1 kΩ pull-up to 3.3 V causes `dmesg` "USB disconnect → new device → not responding → error -71" — confirms the mux switches but the STM32 USB stack stays dormant without a separate PA0 trigger. No STM32 GPIO drives T211 — pure-hardware pad (likely a factory pogo-pin point). |
 | `0x08003F8E`  | n/a  | `usb_device_descriptor_msc`       | The PID-0x0004 device descriptor (MSC persona). 18 bytes: VID 0x2CC2, PID 0x0004, bcdDev 0x0200, iMfr=1, iProd=2, iSer=3. (The audio-class descriptor seen via lsusb has PID 0x0005 and is built dynamically by the DSP daughter board — NOT by STM32 firmware.) |
 | flash `0xB20`, `0xD80` | n/a | `FLASH_KEY1` / `KEY2` literals | `0x45670123` and `0xCDEF89AB` — STM32F0 flash unlock keys, present in firmware so the bar can self-program its own flash (capability used by the service-mode MSC firmware-write path). |
 
@@ -355,8 +357,8 @@ these 8 posters.
 | SYSCFG     | `0x40010000`   | 4        | EXTI source select                                 |
 | RCC        | `0x40021000`   | many     | Clock gating                                       |
 | PWR        | `0x40007000`   | 9        | Low-power mode control                             |
-| I2C1       | `0x40005400`   | 1        | **EEPROM bus** (PB8/PB9) — init at `0x0800F61C`, called from `transition_state` at `0x0800A792`. Targets a 24Cxx-class EEPROM at 7-bit address `0x50` (= 8-bit `0xA0`). The PA0-LOW service-mode handler at `0x0800ED10` reads this EEPROM. EEPROM IC location unconfirmed (probably on daughter board). |
-| I2C2       | `0x40005800`   | 2        | **DSP communication bus** (also `0x40005828` = I2C2_TXDR for byte send) |
+| I2C1       | `0x40005400`   | 1        | **DSP control bus** (PB8/PB9 AF1) — init at `0x0800F61C`, called from `transition_state` at `0x0800A792`. Used by `dsp_blob_uploader @ 0x0800CA70` (target slave `0x88` = 7-bit `0x44`) and `write_dsp_register @ 0x0800CAA0` (runtime slave `0xB2` = 7-bit `0x59`). **Corrected 2026-06-09 from earlier mislabel: the literal `0x40005400` lives at flash `0x0800F67C` which is the transition_state I²C init.** |
+| I2C2       | `0x40005800`   | 2        | **EEPROM / service-mode bus** (PB10/PB11 AF1) — used by service-mode handshake at `0x0800ED10`. Targets the service EEPROM at 7-bit address `0x50` (= 8-bit `0xA0`). Live-confirmed 2026-06-09: handle at `0x20002734` has `Instance = 0x40005800`. **No device responds at 0x50 on this bar** (NACKF=1, STOPF=1 sticky in I²C2 ISR after firmware's own handshake attempts). |
 | FLASH      | `0x40022000`   | many     | Self-flash code uses FLASH_KEYR magic constants    |
 | USB        | `0x40005C00`   | (none direct) | USB ISR at vector slot 31 = `0x08003988`. USB peripheral clock (`RCC_APB1ENR` bit 23) is **NOT enabled** in normal operation (live: `RCC_APB1ENR = 0x10200012`). The Cinebar One's USB connector is normally routed via an external mux to the DSP daughter board (DSP enumerates as USB Audio Class). The STM32 USB stack — with FAT12 MSC persona at flash `0x08003E42`+ — only activates when the bar enters service mode via PA0. See `USB_MODES.md`. |
 
@@ -371,6 +373,7 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 | Pin   | Mode          | Function (best guess)             |
 | ----- | ------------- | --------------------------------- |
 | **PA0** | **Input no-pull** | **★ Service-mode trigger.** Configured by `HAL_GPIO_Init` at `0x0800F0FC`. Reads HIGH idle. When pulled LOW, the firmware enters a polling+EEPROM-handshake function at `0x0800ED10` that reads an I²C EEPROM at device addr 0x50 (8-bit 0xA0) on I²C1 — see `USB_MODES.md`. Hypothesis: this is the entry into the USB-MSC firmware-update persona. **Not yet bench-verified.** |
+| **PA15** | Input (default reset state) | **Inter-board signal from daughter board.** Currently held HIGH by something on the daughter board. **Never configured, read, or written by the STM32 firmware** (grep through disasm = no hits). Live-tested 2026-06-08: forcing PA15 LOW via open-drain GDB write had no effect on USB enumeration or audio. Initially suspected as USB-mux SEL but the trace was misidentified — PA15 goes to the daughter board, the mux SEL is `T211`. Function unknown but NOT the mux SEL. Possible candidates: BT-module status, sub-pairing button, reserved. |
 | PA1   | Input VeryHigh | **IR receiver** (best candidate based on speed setting) |
 | **PA2** | **Output_PP**   | **Function unknown.** Goes HIGH in active, LOW in standby. **Bench-verified 2026-06-08**: PA2 LOW alone (with PB7, PC15 held HIGH) has NO observable effect — audio keeps playing, Toslink Vcc stays at 3V. Previous claim that PA2 was the Toslink load-switch was wrong; the active/standby correlation with Toslink Vcc was coincidental (PC15 is the real master). Possible roles: BT module power gate, indicator, or unused-and-driven-for-symmetry. |
 | **PA3** | **Input**     | Reads always LOW (dead-wired). `is_audio_active()` at `0x0801041C` reads this but the result is meaningless. The SOT-23-5 chip with single trace to PA3 doesn't reach PA3 with usable signal in this firmware's configuration. |

@@ -36,6 +36,7 @@ Rollback to factory: `firmware_01_original-dump.bin`.
 | `firmware_13_combo-5min-standby.bin` | 12 | Single-byte experiment to reduce auto-standby timer. Lands in cyan/intermediate state. Deferred (see task #29). |
 | `firmware_25_nop-ir-power-post.bin` | 22 | NOPs `bl post_event_type0` at `0x0800BFAA` (inside IR-power's sub=1 handler). Lets IR-power dispatch be observed via GDB BPs/trampoline without the bar entering standby and HardFaulting during the transition. |
 | `firmware_29_notify-trap-v2.bin` | 25 | + minimal `notify()` trampoline that logs `{channel, value}` to a single RAM slot at `0x20003E00`/`0x20003E04` before tail-calling notify+4. This is what found `IR-power = notify(13, 0x0201)`. See IR_CODES.md. |
+| `firmware_36_pa0-low-and-eeprom-bypass.bin` | 34 | **Experimental USB-MSC test build.** Two patches, 5 bytes total: (A) flips BEQ→B in `read_pa0()` at `0x0800F14A` so it always returns LOW, (B) replaces the first two instructions of `service_mode_handshake()` at `0x0800ED10` with `movs r0,#0; bx lr` so the EEPROM check immediately succeeds. Goal: force the bar to enter the full PA0-LOW service path without external wiring and without a real EEPROM at I²C2 `0x50` (which we confirmed live 2026-06-08 doesn't exist on this bar — `ISR=0x31` NACK was sticky). For full MSC test, ALSO requires T211 externally pulled HIGH (1 kΩ → 3.3 V). Not yet bench-flashed. |
 
 ## Dead-ends (lessons learned)
 
