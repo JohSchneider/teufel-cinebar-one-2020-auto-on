@@ -281,6 +281,24 @@ these 8 posters.
 | `0x08010278`  | ★★   | `create_rtx_queue_group`          | Creates 3 RTX queues at `0x200023BC+8/12/16`. |
 | `0x08010220`  | ★★   | `init_state_and_queues`           | Initializes state struct + 3 RTX queues + creates event-loop thread (entry `0x0800ACA5`) via osThreadNew at `0x08010262` |
 
+### Service mode / USB-MSC persona (see `USB_MODES.md`)
+
+| Address       | Conf | Symbol                            | Notes                                       |
+| ------------- | ---- | --------------------------------- | ------------------------------------------- |
+| `0x0800F0FC`  | ★★★  | `pa0_gpio_init`                   | Enables GPIOA clock (RCC_AHBENR bit 17) and configures PA0 as INPUT, no pull. Called from `0x0800E92C` (inside the service-mode entry function at `0x0800E8A0`). |
+| `0x0800F13C`  | ★★★  | `read_pa0`                        | `int read_pa0(void)`. Calls `HAL_GPIO_ReadPin(GPIOA, 1)`. Returns 1 if PA0 is LOW (active service), 0 if HIGH (idle). |
+| `0x0800ED10`  | ★★★  | `service_mode_handshake`          | Polls PA0 in a tight loop until LOW. Then waits 100 ms, runs I²C transactions to EEPROM at addr 0xA0 (= 7-bit 0x50) on I²C1, validates returned bytes (`[0]==2, [1]==3, [2]` ∈ valid range), and proceeds to further service-mode work (likely the MSC-USB activation). Up to 6 retries on I²C error. Stack frame requires proper BL entry (force-PC via GDB crashes on return). |
+| `0x0800E7E8`  | ★★   | `service_mode_outer`              | Calls `service_mode_handshake` then chains to `0x0800E8A0`. Returns error code 14 if handshake failed. |
+| `0x0800E8A0`  | ★★   | `service_mode_main`               | Larger function that includes a one-shot PA0 check at `0x0800E93C` (via `read_pa0`); if PA0 LOW, enters special path at `0x0800E944`; if HIGH, branches to exit `0x0800EA2A`. Recursively calls `service_mode_outer`. |
+| `0x0800F0D0`  | ★★   | `i2c1_write`                      | I²C1 write wrapper. Used by `service_mode_handshake` to talk to the EEPROM. |
+| `0x0800F0AC`  | ★★   | `i2c1_read`                       | I²C1 read wrapper. EEPROM read. |
+| `0x0800F0F4`  | ★★   | `os_delay_ms`                     | RTX5 osDelay wrapper. Used for the 100 ms debounce. |
+| `0x08003988`  | ★★★  | `USB_IRQHandler`                  | Vector slot 31. Inside, calls `0x080030B0` on USB peripheral events. Only relevant when USB clock is enabled (i.e., MSC-persona active). |
+| `0x080030B0`  | ★★   | `usb_peripheral_init`             | Sets up USB peripheral registers (loaded base from `0x080032B0` = `0x40005C00`). |
+| `0x08003E42`  | n/a  | `fat12_image_base`                | Start of the embedded FAT12 filesystem image (boot sector "MSDOS5.0", volume label "TEUFEL CBO", contains VERSION.TXT). Referenced once from MSC code at file offset 0x52C. |
+| `0x08003F8E`  | n/a  | `usb_device_descriptor_msc`       | The PID-0x0004 device descriptor (MSC persona). 18 bytes: VID 0x2CC2, PID 0x0004, bcdDev 0x0200, iMfr=1, iProd=2, iSer=3. (The audio-class descriptor seen via lsusb has PID 0x0005 and is built dynamically by the DSP daughter board — NOT by STM32 firmware.) |
+| flash `0xB20`, `0xD80` | n/a | `FLASH_KEY1` / `KEY2` literals | `0x45670123` and `0xCDEF89AB` — STM32F0 flash unlock keys, present in firmware so the bar can self-program its own flash (capability used by the service-mode MSC firmware-write path). |
+
 ---
 
 ## RAM addresses (state, structs)
@@ -337,10 +355,10 @@ these 8 posters.
 | SYSCFG     | `0x40010000`   | 4        | EXTI source select                                 |
 | RCC        | `0x40021000`   | many     | Clock gating                                       |
 | PWR        | `0x40007000`   | 9        | Low-power mode control                             |
-| I2C1       | `0x40005400`   | 1        | One use                                            |
+| I2C1       | `0x40005400`   | 1        | **EEPROM bus** (PB8/PB9) — init at `0x0800F61C`, called from `transition_state` at `0x0800A792`. Targets a 24Cxx-class EEPROM at 7-bit address `0x50` (= 8-bit `0xA0`). The PA0-LOW service-mode handler at `0x0800ED10` reads this EEPROM. EEPROM IC location unconfirmed (probably on daughter board). |
 | I2C2       | `0x40005800`   | 2        | **DSP communication bus** (also `0x40005828` = I2C2_TXDR for byte send) |
 | FLASH      | `0x40022000`   | many     | Self-flash code uses FLASH_KEYR magic constants    |
-| USB        | `0x40005C00`   | (none direct) | Used only via real ISR at vector slot 31 = `0x08003988` |
+| USB        | `0x40005C00`   | (none direct) | USB ISR at vector slot 31 = `0x08003988`. USB peripheral clock (`RCC_APB1ENR` bit 23) is **NOT enabled** in normal operation (live: `RCC_APB1ENR = 0x10200012`). The Cinebar One's USB connector is normally routed via an external mux to the DSP daughter board (DSP enumerates as USB Audio Class). The STM32 USB stack — with FAT12 MSC persona at flash `0x08003E42`+ — only activates when the bar enters service mode via PA0. See `USB_MODES.md`. |
 
 ### Unused peripherals
 
@@ -352,7 +370,7 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 
 | Pin   | Mode          | Function (best guess)             |
 | ----- | ------------- | --------------------------------- |
-| PA0   | Input         | Button on bar                     |
+| **PA0** | **Input no-pull** | **★ Service-mode trigger.** Configured by `HAL_GPIO_Init` at `0x0800F0FC`. Reads HIGH idle. When pulled LOW, the firmware enters a polling+EEPROM-handshake function at `0x0800ED10` that reads an I²C EEPROM at device addr 0x50 (8-bit 0xA0) on I²C1 — see `USB_MODES.md`. Hypothesis: this is the entry into the USB-MSC firmware-update persona. **Not yet bench-verified.** |
 | PA1   | Input VeryHigh | **IR receiver** (best candidate based on speed setting) |
 | **PA2** | **Output_PP**   | **★ SPDIF buffer / Toslink load-switch ENABLE.** Driven HIGH in active state (3V on Toslink Vcc), LOW in standby (0.8V leakage). Set LOW by `spdif_subsystem_init` at `0x080103dc`. Empirically confirmed via Recipe D ODR snapshots. |
 | **PA3** | **Input**     | Reads always LOW (dead-wired). `is_audio_active()` at `0x0801041C` reads this but the result is meaningless. The SOT-23-5 chip with single trace to PA3 doesn't reach PA3 with usable signal in this firmware's configuration. |
