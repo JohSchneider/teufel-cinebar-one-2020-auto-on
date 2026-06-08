@@ -27,12 +27,23 @@ set -e
 verbose=0
 if [ "${1:-}" = "-v" ]; then verbose=1; shift; fi
 
+# Mode IDs (verified 2026-06-07 from IR-handler disasm):
+#   Music = 0, Voice = 1, Movie = 2
+# Earlier labels in this script had Movie=1 and Voice=2 — that was wrong.
+# Verified by looking at each modeXxx sub-handler's `movs r0, #N; bl set_audio_mode`:
+#   modeMusic @ 0x0800C246 → r0=0
+#   modeVoice @ 0x0800C29E → r0=1
+#   modeMovie @ 0x0800C272 → r0=2
+# (Whether set_audio_mode at 0x0800AB54 and the mode-preset loader at
+# 0x0800C560 — what this script actually calls — agree on the numbering
+# has NOT been independently verified yet. If switching sounds wrong,
+# try a different id.)
 case "${1:-}" in
     0|music) mode=0; name=Music ;;
-    1|movie) mode=1; name=Movie ;;
-    2|voice) mode=2; name=Voice ;;
+    1|voice) mode=1; name=Voice ;;
+    2|movie) mode=2; name=Movie ;;
     *)
-        echo "Usage: $0 [-v] <music|movie|voice|0|1|2>" >&2
+        echo "Usage: $0 [-v] <music|voice|movie|0|1|2>" >&2
         exit 1
         ;;
 esac
