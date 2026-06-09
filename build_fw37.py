@@ -132,7 +132,7 @@ shim_halfwords = [
     0x4807,  # ldr r0, [pc, #28]
     0x4907,  # ldr r1, [pc, #28]
     0x6001,  # str r1, [r0]    (telltale write)
-    0x4806,  # ldr r0, [pc, #24]
+    0x4807,  # ldr r0, [pc, #28]  (was 0x4806 = [pc, #24] — pointed at 0xDEADBEEF instead of RCC_APB1ENR; caused HardFault)
     0x6801,  # ldr r1, [r0]
     0x2201,  # movs r2, #1
     0x05d2,  # lsls r2, r2, #23
