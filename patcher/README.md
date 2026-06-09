@@ -42,7 +42,7 @@ can decide whether to proceed.
 
 ## Step 2 — Patch
 
-Three variants are available — **`build_fw34_from_dump.py` is the recommended productive variant**:
+Four variants are available — **`build_fw35_from_dump.py` is the recommended "done" build** (fw_34 + preloaded vol/Music/bass). Pick `build_fw34_from_dump.py` if you want fw_34's behaviour without preloaded state, or one of the simpler variants if you want a smaller patch:
 
 ### `build_fw05_from_dump.py` — Goal #1: auto-boot to active
 
@@ -56,11 +56,10 @@ python3 build_fw05_from_dump.py mydump.bin firmware_05.bin
 26 bytes changed across 2 sites. Reversible by reflashing your original
 dump.
 
-### ★ `build_fw34_from_dump.py` — Goal #1 + Goal #2 (recommended)
+### `build_fw34_from_dump.py` — Goal #1 + Goal #2 (productive base)
 
 Auto-on + wake-on-SPDIF + auto-suspend, with the **DSP actually powered
-down in standby** (not just held in reset). This is the productive
-variant. Net effect:
+down in standby** (not just held in reset). Net effect:
 
 - Audio plays whenever your source is awake, no IR remote needed
 - Bar wakes within ~25 ms of audio returning after silence
@@ -72,7 +71,37 @@ variant. Net effect:
 python3 build_fw34_from_dump.py mydump.bin firmware_34.bin
 ```
 
-114 bytes changed across 5 sites.
+114 bytes changed across 5 sites. Same `code SHA256` as fw_35 (the only
+difference between the two variants is in vEEPROM, which the code-SHA
+masks). Use this if you want fw_34's behaviour but want vEEPROM to come
+up with whatever was last persisted on your bar, instead of fw_35's
+preloaded vol=35 / Music / bass=+8.
+
+### ★ `build_fw35_from_dump.py` — fw_34 + preloaded vol/mode/bass (recommended "done")
+
+fw_34's behaviour PLUS two vEEPROM entries appended that override the
+latest persisted values for volume and bass. mode and modeExtend already
+default to Music / ON in the vanilla vEEPROM, so they don't need explicit
+overrides. After flashing, the bar comes up at:
+
+- **volume = 35**
+- **bass = +8**
+- **mode = Music**
+- **modeExtend = ON**
+
+```bash
+python3 build_fw35_from_dump.py mydump.bin firmware_35.bin
+```
+
+114 code bytes + 8 vEEPROM bytes. The script scans YOUR dump's vEEPROM
+for the first free slot and appends there, so it works even if your bar
+has its own usage history.
+
+**SWD only.** The USB-MSC firmware-update path can NOT deliver fw_35's
+vEEPROM preload — MSC writes only the app region (0x08008000+), leaving
+vEEPROM untouched. So MSC-uploading fw_35 gives you fw_34's behaviour
+plus whatever vEEPROM was already in your bar. For the preload to take
+effect, you must SWD-flash.
 
 ### `build_fw22_from_dump.py` — Goal #1 + Goal #2 (legacy / over-conservative)
 

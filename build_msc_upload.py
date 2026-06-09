@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 Construct a Cinebar One MSC firmware-upload file.
 
 Input:  a full 128 KB firmware image (e.g., firmware_34_pc15-only-keepalive.bin)

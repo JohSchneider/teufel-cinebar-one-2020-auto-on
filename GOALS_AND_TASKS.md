@@ -153,8 +153,8 @@ The earlier session work (tasks #1-#13) isn't fully preserved in current context
 
 **Productive firmware delivered:**
 - `firmware_05_autoboot-active-on-power.bin` (Goal #1 only)
-- `firmware_34_pc15-only-keepalive.bin` (Goal #1 + Goal #2, cleanest) ★ recommended
-- `firmware_35_preloaded-music-vol35.bin` (fw_34 + preloaded vEEPROM state)
+- `firmware_34_pc15-only-keepalive.bin` (Goal #1 + Goal #2, productive base — use if you want fresh vEEPROM behavior)
+- **`firmware_35_preloaded-music-vol35.bin` (fw_34 + preloaded vEEPROM: vol=35, Music, bass=8, modeExtend=ON) ★ recommended / "done"**
 
 **Protocols / interfaces decoded:**
 - DSP control register map (`dsp_protocol.md`)

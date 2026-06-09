@@ -1,6 +1,6 @@
 # Teufel Cinebar One — Firmware Variants
 
-Index of every firmware binary produced during this RE work, with status and rationale. **`firmware_22_wake-on-spdif.bin`** is the productive base (auto-on + wake-on-SPDIF, no extra shims). Everything else layers on top for either an extra feature or for instrumentation.
+Index of every firmware binary produced during this RE work, with status and rationale. **`firmware_35_preloaded-music-vol35.bin`** is the final "done" build — it carries every productive change (auto-on, wake-on-SPDIF, clean standby) plus preloaded vEEPROM state (vol=35, Music mode, bass=8). `firmware_34_pc15-only-keepalive.bin` is the same minus the vEEPROM preload — pick fw_34 if you want the bar to come up with whatever vEEPROM state was last persisted instead.
 
 All binaries are 128 KB, load at `0x08000000`. Flash via:
 
@@ -9,6 +9,8 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
         -c "program <file> verify reset exit 0x08000000"
 ```
 
+Or, on a bar where bootloader MSC entry works (hold SUB PAIRING while powering on): drop `upload_fw34.bin` + `upload_fw34_reset.bin` on the MSC volume (see `MSC_PROTOCOL.md`). **There is no `upload_fw35.bin` — and there can't be**: the bootloader's MSC upload writes only the app region (`0x08008000+`), and fw_35 differs from fw_34 only in vEEPROM (`0x07000+`, below the app region), so an MSC upload of fw_35 would be byte-identical to an MSC upload of fw_34. To get fw_35's preloaded vol/mode/bass, **SWD-flash** the full `firmware_35_preloaded-music-vol35.bin` instead.
+
 Rollback to factory: `firmware_01_original-dump.bin`.
 
 ## Productive lineage
@@ -16,13 +18,13 @@ Rollback to factory: `firmware_01_original-dump.bin`.
 | File | Layers on | Status | Purpose |
 |---|---|---|---|
 | `firmware_01_original-dump.bin` | — | ★ Baseline | Factory dump, RDP=AA verified. Rollback target. |
-| `firmware_05_autoboot-active-on-power.bin` | 01 | ✓ Goal #1 | Bar boots to active state on AC restore (vs factory standby). |
-| `firmware_12_autoboot-active-rail-on.bin` | 01 | ✓ Goal #1+rail | fw_05 + NOPs of `PA2/PB7/PC15 LOW` in standby path. Audio rail stays up across standby. |
-| `firmware_22_wake-on-spdif.bin` | 01 | ✓ Working (over-conservative) | Goal #1 + Goal #2 complete: auto-on + wake-on-SPDIF + auto-suspend on silence ~15 min. Functional but DSP stays powered in standby (PB7 stays HIGH) — superseded by fw_34. |
-| **`firmware_34_pc15-only-keepalive.bin`** | 22 | ★ **Productive** (bench-verified 2026-06-08) | Minimal-NOP version of fw_22. Bench bisection (direct GPIO toggling) showed PC15 alone is the Toslink-rail master, so the PA2-LOW and PB7-LOW writes in the standby path don't need to be NOPed. fw_34 NOPs only `0x0A836` (PC15-LOW) and lets PA2/PB7 go LOW normally — so the DSP actually powers down in standby (PB7 LOW kills the DSP rail), while Toslink stays alive for wake-on-SPDIF (PC15 HIGH). End-to-end verified: bar auto-suspends on silence and auto-wakes when SPDIF returns. Resolves task #59. |
-| `firmware_23_music-mode-default.bin` | 22 | ✓ Optional | + 24-byte Shim 3 at `0x0801E880`: after every `transition_state(2)` (wake), calls `set_audio_mode(0)` to force Music. Useful only if the bar auto-switches mode on detected audio format. Hasn't yet been rebuilt on fw_34 base — would be straightforward. |
-| `firmware_32_preloaded-music-vol35.bin` | 22 | ✓ Legacy | fw_22 with vEEPROM page appended: `vol=35, bass=8, modeExtend=1, mode=Music`. Superseded by fw_35 (same idea on the better fw_34 base). |
-| `firmware_35_preloaded-music-vol35.bin` | 34 | ✓ Optional | Same vEEPROM append as fw_32, but on the productive fw_34 base. Bar boots with `vol=35, bass=8, modeExtend=ON, mode=Music`, gets fw_34's "DSP fully off in standby" behaviour as well. |
+| `firmware_05_autoboot-active-on-power.bin` | 01 | ✓ Goal #1 only | Bar boots to active state on AC restore (vs factory standby). No wake-on-SPDIF, no clean-standby logic. Use if you ONLY want Goal #1. |
+| `firmware_12_autoboot-active-rail-on.bin` | 01 | ⚠ Superseded | fw_05 + over-conservative NOPs of `PA2/PB7/PC15 LOW` in standby path. Audio rail stays up across standby (DSP draws power continuously). Kept for traceability — use fw_34 instead. |
+| `firmware_22_wake-on-spdif.bin` | 01 | ⚠ Superseded | Goal #1 + Goal #2 complete: auto-on + wake-on-SPDIF + auto-suspend on silence ~15 min. Functional but DSP stays powered in standby (PB7 stays HIGH). Superseded by fw_34. |
+| `firmware_34_pc15-only-keepalive.bin` | 22 | ✓ **Productive base** (bench-verified 2026-06-08) | Minimal-NOP version of fw_22. Bench bisection (direct GPIO toggling) showed PC15 alone is the Toslink-rail master, so the PA2-LOW and PB7-LOW writes in the standby path don't need to be NOPed. fw_34 NOPs only `0x0A836` (PC15-LOW) and lets PA2/PB7 go LOW normally — so the DSP actually powers down in standby (PB7 LOW kills the DSP rail), while Toslink stays alive for wake-on-SPDIF (PC15 HIGH). End-to-end verified: bar auto-suspends on silence and auto-wakes when SPDIF returns. Resolves task #59. Use this if you want fresh vEEPROM behavior. |
+| **`firmware_35_preloaded-music-vol35.bin`** | 34 | ★ **DONE / shipped** | fw_34 + vEEPROM page appended (`vol=35, bass=8, modeExtend=1, mode=Music`). Boots straight into the user's preferred audio setup: Music mode, modest volume, modeExtend ON. Inherits all of fw_34's behaviours (auto-on, wake-on-SPDIF, DSP fully off in standby). **This is the recommended end-state.** |
+| `firmware_23_music-mode-default.bin` | 22 | ✓ Optional (legacy base) | + 24-byte Shim 3 at `0x0801E880`: after every `transition_state(2)` (wake), calls `set_audio_mode(0)` to force Music. Largely subsumed by fw_35's vEEPROM preload — fw_35 sets the *persisted* mode to Music, so the bar naturally restores Music on every wake without needing a forced-write shim. Hasn't been rebuilt on fw_34 base; fw_35 is the better answer in practice. |
+| `firmware_32_preloaded-music-vol35.bin` | 22 | ⚠ Superseded | fw_22 with the same vEEPROM page as fw_35, but built on the older (over-conservative) fw_22 base. Superseded by fw_35. |
 
 ## Diagnostic / probe variants (kept around — still flashable)
 

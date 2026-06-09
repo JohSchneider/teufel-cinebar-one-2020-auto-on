@@ -19,9 +19,12 @@ This document captures the complete reverse-engineered USB-MSC firmware-upload p
 ## Bootloader / Application split
 
 ```
-Flash 0x08000000-0x08007FFF    BOOTLOADER       (32 KB, never erased by MSC)
+Flash 0x08000000-0x08006FFF    BOOTLOADER code  (~28 KB, never touched by MSC)
+Flash 0x08007000-0x08007FFF    vEEPROM          (2 KB × 2 pages, never touched by MSC)
 Flash 0x08008000-0x0801FFFF    APPLICATION      (96 KB, erased+rewritten by MSC update)
 ```
+
+**Important consequence**: the MSC upload path can only deliver changes in the application region. Patches that live in the vEEPROM region (e.g., fw_35's preloaded `vol=35/Music/bass=+8` entries) **cannot** be delivered via MSC — uploading fw_35 via MSC would be byte-identical to uploading fw_34, since the upload-file generator only extracts bytes `0x08000..0x1FFFF` of the source image. To install fw_35 with its vEEPROM preload intact, SWD-flash the full 128 KB image instead.
 
 The bootloader at `0x08000000` is the chip's reset target. Its `main()` lives at flash `0x080039D4` and either jumps to the application (`bl 0x08002DB8` at `0x08003A92`) or enters the USB-MSC firmware-update path (`bl 0x08003AD0`+) based on:
 
