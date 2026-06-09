@@ -170,11 +170,19 @@ Builder: `/tmp/firmware/build_msc_upload.py <input_full_firmware.bin> <output_up
 
 ## Entering MSC mode without firmware modification
 
-The bootloader's `main()` reads PA1 at `0x08003A6C`. PA1 is the **IR receiver** line (idle HIGH, pulses LOW on demodulated 38 kHz bursts).
+The bootloader's `main()` reads PA1 at `0x08003A6C`. **PA1 is the chassis SUB PAIRING button signal** (verified live 2026-06-09 via per-pin GPIO scan: PA1 toggles only when the sub-pairing button is pressed; the IR receiver pulses a different pin, PB1).
 
-**End-user entry gesture:** hold any TV remote button while powering on the bar. The repeated IR bursts produce PA1 LOW pulses at ~38 kHz; the bootloader's initial read at `0x08003A6C` has a high probability of catching one during a burst. Once PA1 LOW is detected, control branches past the app-validity check to the MSC wait loop (`0x08003AB2`) which exits as soon as PA1 returns HIGH (i.e., during the gap between IR bursts), then enters USB MSC init.
+**End-user entry gesture:**
 
-If a generic remote doesn't work, the bar's IR receiver chip may use a non-standard carrier; a Saleae capture on PA1 would identify the exact frequency. Failing that, electrically grounding PA1 (e.g., via the front-PCB ribbon cable, task #66) works deterministically.
+> **Hold the chassis SUB PAIRING button while powering on the bar.**
+
+That's it — no remote, no disassembly, no firmware modification, no soldering. The button is on the daughter board, accessible from the bar's case exterior.
+
+Mechanics:
+- Idle: PA1 reads HIGH (external pull-up). Bootloader's PA1 read returns HIGH → app validity check → boot_jump to app.
+- Button held during boot: PA1 reads LOW. Bootloader's PA1 read returns LOW → skip app-validity check → enter wait loop at `0x08003AB2` → loop exits as soon as PA1 goes HIGH (release the button after a moment) → USB MSC init begins.
+
+Earlier we wrongly assumed PA1 was the IR receiver and proposed "hold any TV remote button" as the gesture. Live test invalidated that — IR activity doesn't toggle PA1.
 
 ## Recovery if a partial upload bricks the app region
 
@@ -189,6 +197,7 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 
 ## Open questions / not yet investigated
 
+- **Why PB1 toggles during IR but the STM32 doesn't seem to read it.** PB1 toggles on every IR burst (verified live 2026-06-09) but no GPIO init or read of PB1 was found in the firmware. Likely: PB1 carries the raw IR receiver output to the daughter board, which decodes it and forwards the decoded button event to the STM32 via another channel (PA7/PA15 also toggle during IR activity — those are more likely the inter-board signal carrying decoded events).
 - **Bytes 5-8 of the header.** Stored but never read by any handler we traced. Possibly intended as a future CRC slot. Safe to leave at 0.
 - **What pulls T211 HIGH in MSC mode.** Multimeter confirms ~3 V when the bar is in MSC mode. We couldn't statically identify a GPIO that drives it; either there's an STM32 pin we missed, or the USB mux IC auto-switches on D+ pull-up presence (DPPU) and T211 is just a status output of the mux. Practical impact: no external T211 wiring is needed — the bootloader's MSC code drives whatever causes the routing.
 - **Whether `RESET.BIN` can be appended to the upload file in a single drop.** When `chunk_write` completes (state.offset == state.length), state.mode becomes 3 (DONE) but state[+12] is at 0 (last decrement), NOT -1. The next sector write would fail the `state[+12] == -1` header-parse gate, so the appended 0x00 byte wouldn't be processed as a type-0 reset trigger. Untested — separate file is the reliable recipe.

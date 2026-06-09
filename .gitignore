@@ -1,2 +1,9 @@
 firmware_*bin
 disasm.txt
+
+# RAM dumps and one-shot data captures (not source of truth)
+ram_snap_*.bin
+veeprom_live*.bin
+veeprom_after_*.bin
+# MSC upload payloads (re-buildable from build_msc_*.py)
+upload_*.bin

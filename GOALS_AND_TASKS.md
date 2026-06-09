@@ -94,7 +94,7 @@ This phase ended with a "victory" that was actually wrong — we had no baseline
 - **Task #68**: Built `fw_38` (1-byte patch in bootloader: `bne→b`) → bench-tested → **MSC mode entered, bar enumerates as PID 0x0004**
 - Decoded the full upload protocol via live BP tracing of the WRITE handler
 - End-to-end validated by uploading a self-identifying 96 KB test pattern + reading back via SWD: every word matched
-- Identified the end-user entry gesture: pull PA1 LOW at boot (= hold TV remote button at power-on, 38 kHz IR carrier pulses PA1 LOW)
+- Identified the end-user entry gesture: **hold the chassis SUB PAIRING button while powering on** (verified 2026-06-09 via per-pin GPIO scan — PA1 toggles only when the sub-pairing button is pressed; an earlier guess that PA1 was the IR receiver was disproved by the same scan)
 
 ### Phase J — Housekeeping and documentation
 *Tasks: implicit*
@@ -144,7 +144,7 @@ The earlier session work (tasks #1-#13) isn't fully preserved in current context
 | #60 | [LOW PRIO] Patch master output gain | Low | Hypothesis weakened by "rare metallic click" symptom (sounds like underrun, not headroom) |
 | #61 | Investigate DSP register `0xB9 = 0x038E7A` (unique boot-time config constant) | Low | Anomaly in DSP register map |
 | #62 | ★ Investigate occasional metallic click | High | Likely I²S underrun or biphase bit-slip — hardware-side, not firmware-patchable |
-| #66 | Map the 6-pin ribbon cable to the front PCB (LED + IR receiver) | Medium | Multimeter task; would enable PA1-LOW gesture for MSC update without disassembly |
+| #66 | Map the 6-pin ribbon cable to the front PCB (LED + IR receiver) | Low (revised) | The original motivation (find PA1 for MSC entry) is **resolved** — PA1 is the chassis SUB PAIRING button, not on the ribbon. Ribbon mapping still useful for completeness (identifying which ribbon pin is IR receiver, which are R/G/B LED) but no longer blocks any MSC-related work. PB1 = IR receiver output (verified via GPIO scan) and is probably routed via the ribbon. |
 
 ---
 

@@ -92,15 +92,19 @@ The PERIPHERAL LITERAL search is gold — every time the firmware uses GPIOA, it
 Now build a **pinmap**: scan every `HAL_GPIO_Init` call, decode the args (Pin/Mode/Pull/Speed/AF), and dump a table. We did this with a Python regex over the disasm. The output:
 
 ```
-PA0   Input no-pull       — Service mode trigger (later: not really)
-PA1   Input VeryHigh      — IR receiver
+PA0   Input no-pull       — Service mode trigger (later: actually CEC factory test)
+PA1   Input VeryHigh      — Initially: "IR receiver" guess. Actually: chassis SUB PAIRING button
+                            (verified live by GPIO scanning during button press vs IR activity)
 PA5   AF1                 — TIM2/SPI? (later: CEC config side path)
+PB1   (no init seen)      — Actual IR receiver line (verified live — pulses on remote activity)
 PB6/PB7   I²C1 (DSP)
 PB8/PB9   I²C1 alt
 PB10/PB11 I²C2 (EEPROM/CEC)
 PC15  Output_PP           — !! later: this is THE Toslink rail master
 PF0   Output_PP           — DSP reset (active low)
 ```
+
+Note "guess" vs "verified live": the `HAL_GPIO_Init` parameters tell you HOW a pin is configured, NOT what it's connected to externally. The "VeryHigh speed Input" hint suggested IR (since IR receivers output edges at ~38 kHz). The verified-live finding came from a per-bit GPIO IDR sample while pressing the actual remote vs the chassis button — see "Sidebar: the PA1 mislabeling" at the end of Phase 8.
 
 Use the datasheet alternate-function table to translate AF numbers. Don't trust the pin labels — the firmware uses the pins for something specific that may not match the schematic-style label.
 
@@ -610,7 +614,7 @@ That last point is the key — **the bootloader's MSC entry is on PA1, not PA0**
 
 9. **The reset trigger** — write a 1-byte file containing `0x00`. Bootloader sees type-0 → SYSRESETREQ → bar reboots into the freshly-uploaded firmware.
 
-**Entry without firmware modification:** the bootloader reads PA1 (= IR receiver line) at `0x08003A6C`. If PA1 is LOW at that read, the bootloader skips the app-validity check and goes straight to MSC. PA1 idles HIGH but pulses LOW under a 38 kHz IR signal — **so holding any TV remote button at power-on triggers MSC mode**. No tools, no patches, no opening the case.
+**Entry without firmware modification:** the bootloader reads PA1 at `0x08003A6C`. If PA1 is LOW at that read, the bootloader skips the app-validity check and goes straight to MSC. **PA1 is wired to the chassis SUB PAIRING button** (verified live, see sidebar below) — so **hold the chassis sub-pairing button while powering on** → MSC mode. No tools, no remote, no opening the case.
 
 ### Sidebar: the "0x30 fill" mystery
 
@@ -673,6 +677,46 @@ Workaround: use OpenOCD's TCL command interface directly, bypassing GDB:
 This wrote `FP_COMP0` directly. Breakpoints fired immediately.
 
 **Lesson:** when a debugger feature fails silently, **read the hardware state directly** to confirm. Don't trust the debugger's bookkeeping if behavior contradicts it. And: have a fallback (TCL, telltale RAM writes, manual register pokes) for when the primary path breaks.
+
+### Sidebar: the PA1 mislabeling — IR receiver vs. sub-pairing button
+
+After fw_38 demonstrated the bootloader's PA1-LOW MSC entry, we wanted to find the end-user gesture that pulls PA1 LOW. Looking at the Phase 1 pinmap, we'd labeled PA1 "IR receiver — VeryHigh speed Input." That label was a **guess** based on the GPIO_Init parameters (VeryHigh speed suggests fast edges, consistent with a 38 kHz IR carrier).
+
+Proposed gesture (in an earlier draft): *"hold any TV remote button at power-on; IR bursts pulse PA1 LOW."*
+
+Bench-verified — and it didn't work. Time to actually scan ALL pins for IR-correlated activity vs button-press-correlated activity.
+
+The technique: a GDB script that samples every GPIO IDR 800 times and tracks per-bit "ever seen 0" and "ever seen 1." Bits seen as BOTH are toggling. Run twice:
+
+```bash
+# Baseline (nothing pressed, nothing radiating IR):
+gdb-multiarch -batch -x gdb/find_ir_pin.gdb
+#   Output: GPIOA toggled = 0x0000  → PA noisy, nothing else
+#           GPIOB toggled = 0x2001  → PB0 + PB13 (audio bus noise)
+
+# With Arduino IR transmitter active, aimed at the bar:
+gdb-multiarch -batch -x gdb/find_ir_pin.gdb
+#   Output: GPIOA toggled = 0x8080  → PA7, PA15
+#           GPIOB toggled = 0x2003  → PB0, PB1, PB13 (PB1 new!)
+
+# With the chassis SUB PAIRING button held:
+gdb-multiarch -batch -x gdb/find_ir_pin.gdb
+#   Output: GPIOA toggled = 0x8082  → PA1, PA7, PA15 (PA1 new!)
+#           GPIOB toggled = 0x0001  → PB0 (no PB1 = no IR)
+```
+
+Decoded:
+- **PB1** toggles only with IR activity → that's the IR receiver's output (the actual chip-output line). The STM32 doesn't appear to read PB1 directly — IR decoding happens on the daughter board.
+- **PA1** toggles only with the chassis button → that's the SUB PAIRING button signal.
+- PA7 and PA15 toggle in BOTH IR and button scenarios → probably daughter-board "user input event" signals (forwarded button events + decoded IR events).
+
+So the bootloader's MSC entry trigger is **the existing chassis button**, not the IR remote.
+
+**Lesson 1:** `HAL_GPIO_Init` parameters tell you the pin's *electrical* configuration — speed, mode, pull. They DO NOT tell you what's connected to the pin externally. A "VeryHigh speed Input" could be IR, a button, a clock signal, a level-shifted control line, or anything else that switches fast. The only reliable way to know is **bench-test the pin under known inputs** (press the button, press the remote, change the audio source, etc.) and observe what toggles.
+
+**Lesson 2:** Multi-port GPIO scanning is cheap and powerful. The find_ir_pin.gdb pattern (accumulate "ever LOW" / "ever HIGH" masks, then XOR) catches any pin that's actively switching during your test. Run it under different conditions and diff the results.
+
+---
 
 ### Sidebar: the one-shot self-destruct (fw_38's design flaw)
 
