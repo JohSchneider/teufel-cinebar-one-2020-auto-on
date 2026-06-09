@@ -282,7 +282,34 @@ these 8 posters.
 | `0x08010278`  | ★★   | `create_rtx_queue_group`          | Creates 3 RTX queues at `0x200023BC+8/12/16`. |
 | `0x08010220`  | ★★   | `init_state_and_queues`           | Initializes state struct + 3 RTX queues + creates event-loop thread (entry `0x0800ACA5`) via osThreadNew at `0x08010262` |
 
-### Service mode / USB-MSC persona (see `USB_MODES.md`)
+### Bootloader USB-MSC firmware-update handlers (see `MSC_PROTOCOL.md`)
+
+These live in the BOOTLOADER region (`0x08000000-0x08007FFF`) and implement the real MSC firmware-upload protocol — distinct from the misnamed "service mode" in the app (which turned out to be CEC, see `CEC_PROTOCOL.md`).
+
+| Address       | Conf | Symbol                            | Notes                                       |
+| ------------- | ---- | --------------------------------- | ------------------------------------------- |
+| `0x080039D4`  | ★★★  | `bootloader_main`                 | Bootloader's main (entered after __main via bx). Configures GPIOs/clocks, reads PA1, validates app, dispatches: PA1 LOW or app-invalid → MSC path; else → boot_jump to app at `0x08008000` |
+| `0x08003A88`  | ★★★  | `bootloader.app_validity_bne`     | The `bne 0x08003A98` that decides "boot app vs MSC". fw_38 flips to unconditional `b` (1-byte patch) to force MSC mode. |
+| `0x08003AB2`  | ★★★  | `bootloader.wait_pa1_high`        | Polling loop that waits for PA1 to read HIGH before initializing USB MSC. End-user MSC entry: pull PA1 LOW at boot, release after a moment. |
+| `0x08003AD0`  | ★★★  | `bootloader.bl_usb_init_site`     | `bl 0x080030B0` — the original USB stack init call. Patched in fw_37+ to redirect via a USBEN-enable shim. |
+| `0x08002DB8`  | ★★★  | `boot_jump_to_app`                | Takes the app vector table at `[0x08002E1C] = 0x08008000`, sets MSP, copies vector table to SRAM (for SCB->VTOR remap), then transfers control to app's reset vector. Never returns. |
+| `0x08002CA6`  | ★★★  | `scsi_write_handler`              | SCSI WRITE(10) handler. State struct at `r0=0x20000210`; sub-state at `+0x200`. Calls function-table dispatch then handles LBA extraction. |
+| `0x08002A88`  | ★★    | `scsi_read_handler`               | SCSI READ(10) handler. Mirrors WRITE structure. |
+| `0x080027F0`  | ★★★  | `scsi_dispatch`                   | Top-level SCSI CDB dispatch. Recognizes opcodes: `0x00 TEST_UNIT_READY`, `0x03 REQUEST_SENSE`, `0x12 INQUIRY`, `0x1A MODE_SENSE_6`, `0x1B START_STOP_UNIT`, `0x1E PREVENT_REMOVAL`, `0x23 READ_FORMAT_CAPACITIES`, `0x25 READ_CAPACITY`, `0x28 READ(10)`, `0x2A WRITE(10)`, `0x2F VERIFY`, `0x5A MODE_SENSE_10`. No vendor-specific opcodes. |
+| `0x08000234`  | ★★★  | `msc_read_backend`                | sec < 5 → memcpy from baked FAT12 RAM image at `~0x2000043D`; sec ≥ 5 → memset(0x30, length). The `0x30` ('0') fill is why unallocated/written-to data clusters appear as ASCII zeros when read back. |
+| `0x0800025C`  | ★★★  | `msc_write_backend`               | sec < 5 → write to FAT12 RAM image (so file creation works at FAT level); sec ≥ 5 → enters the **firmware-update state machine**. Initial state: `state[+12] = -1` → parse header (type byte + 2× BE32 in bytes 1-8). |
+| `0x08003C80`  | ★★★  | `msc_type2_handler`               | "BEGIN_FLASH_UPDATE" — validates length ≤ 0x18000 (96 KB) and 4-byte aligned; sets state.mode=2; calls `flash_unlock` then erases 48 × 2 KB pages at `0x08008000`. Hardcoded target literal at `0x08003CCC = 0x08008000`. |
+| `0x08003CD0`  | ★★★  | `msc_chunk_write`                 | Per-sector flash programmer. Loops 4-byte-at-a-time `HAL_FLASH_Program(WORD, 0x08008000 + state.offset, word)`, with per-word readback verify. On reaching state.length, sets state.mode=3 (DONE). |
+| `0x08000E0C`  | ★★★  | `msc_type0_handler`               | "REBOOT" — writes `SCB->AIRCR = 0x05FA0004` (VECTKEY + SYSRESETREQ), then `b .`. Chip resets within microseconds. |
+| `0x08000B0C`  | ★★★  | `flash_unlock`                    | Standard ST sequence: if FLASH_CR.LOCK set, write KEY1 (`0x45670123`) then KEY2 (`0xCDEF89AB`) to FLASH_KEYR. Returns 0 on success. |
+| `0x20000130`  | ★★★  | `msc_storage_backend_table`       | RAM-resident function-pointer table for the USB MSC class storage backend. Offsets: +0 init, +4 is_ready, +8 NO-OP, +12 NO-OP, +16 READ → `0x08000234`, +20 WRITE → `0x0800025C`, +24 NO-OP. |
+| `0x20000150`  | ★★★  | `msc_chunk_state`                 | byte[0] = mode (1=ready/2=writing/3=done/4=err), word[4] = current offset, word[8] = total length, word[12] = (set during upload, reset to -1 after) |
+| `0x200000C4`  | ★★★  | `msc_header_state`                | byte[+1] = some flag, word[+12] = "is initial? (-1 = yes)" check used by the header parser dispatch in `msc_write_backend` |
+| `~0x2000043D` | ★★★  | `fat12_image_ram`                 | RAM-resident FAT12 image (boot sector + FAT + root dir + VERSION.TXT cluster) that the bootloader returns for SCSI reads of sectors 0-4. |
+
+### App service mode / CEC peripheral (see `CEC_PROTOCOL.md`)
+
+This is the APP's `0x0800E928` PA0-poll path — originally suspected of being the USB-MSC entry but actually initializes the CEC peripheral. Real factory test mode is HDMI-CEC-driven, NOT USB-MSC.
 
 | Address       | Conf | Symbol                            | Notes                                       |
 | ------------- | ---- | --------------------------------- | ------------------------------------------- |

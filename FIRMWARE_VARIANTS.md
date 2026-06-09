@@ -38,7 +38,18 @@ Rollback to factory: `firmware_01_original-dump.bin`.
 | `firmware_29_notify-trap-v2.bin` | 25 | + minimal `notify()` trampoline that logs `{channel, value}` to a single RAM slot at `0x20003E00`/`0x20003E04` before tail-calling notify+4. This is what found `IR-power = notify(13, 0x0201)`. See IR_CODES.md. |
 | `firmware_36_pa0-low-and-eeprom-bypass.bin` | 34 | **Experimental USB-MSC test build.** Two patches, 5 bytes total: (A) flips BEQ→B in `read_pa0()` at `0x0800F14A` so it always returns LOW, (B) replaces the first two instructions of `service_mode_handshake()` at `0x0800ED10` with `movs r0,#0; bx lr` so the EEPROM check immediately succeeds. Bench-tested 2026-06-08: state[+9]=1 confirms service init completes, BUT RCC_APB1ENR bit 23 (USBEN) is never set so USB never enumerates. Service mode turns out to be HDMI-CEC-driven; EEPROM is unrelated to USB. |
 | `firmware_37_usben-forced.bin` | 36 | **Experimental USB-MSC test build, layer 2.** fw_36 + a 48-byte shim at `0x0801E880`. The shim writes a telltale `0xDEADBEEF` to RAM `0x20003FFC`, sets `RCC_APB1ENR \|= (1 << 23)` (USBEN), then tail-calls the original USB init at `0x080030B0`. Bench-tested 2026-06-09: telltale was NOT written → **shim never ran**. The reason: `0x080039D4` is the BOOTLOADER's main, NOT the app's main. The bootloader normally jumps to the app at `0x08008000` via `bl 0x08002DB8` (at `0x08003A92`) and never reaches `0x08003AD0`. The MSC init at `0x08003AD0` is the bootloader's USB-MSC-firmware-update code, only reached if the bootloader decides NOT to jump. |
-| `firmware_38_bootloader-msc-mode.bin` | 37 | **Experimental USB-MSC test build, layer 3.** fw_37 + a 1-byte patch at `0x03A89` (`0xD1` → `0xE0`) that flips the `bne` at `0x08003A88` to unconditional `b`. This forces the bootloader's app-validity check to always "fail" → bootloader skips the boot-jump → continues to the USB MSC init path. **Side effect: the application NEVER RUNS.** No audio, no IR, no normal operation. Bar is in MSC update mode permanently until reflashed. For full MSC test, ALSO requires T211 externally pulled HIGH (1 kΩ → 3.3 V). Reflash fw_34 to restore normal operation. |
+| `firmware_38_bootloader-msc-mode.bin` | 37 | **Experimental USB-MSC test build, layer 3.** fw_37 + a 1-byte patch at `0x03A89` (`0xD1` → `0xE0`) that flips the `bne` at `0x08003A88` to unconditional `b`. Forces bootloader to always enter MSC mode. **Live-validated 2026-06-09**: bar enumerates as `2cc2:0004` MSC; 96 KB upload test pattern transferred byte-perfect; type-0 reset trigger fires SYSRESETREQ. See `MSC_PROTOCOL.md` for the full protocol. **One-shot self-destruct**: fw_37's shim at `0x0801E880` is in the APP region, which the MSC type-2 handler erases as part of any upload. After upload, bar needs SWD recovery. fw_39 would put the shim in the bootloader region (`0x080040D8`) to make MSC mode survive uploads — not yet built. |
+
+## MSC firmware-upload payloads
+
+These are not flashable firmware images themselves — they're file payloads dropped on the MSC volume to trigger uploads/resets via the bootloader's protocol. See `MSC_PROTOCOL.md` and `build_msc_upload.py`.
+
+| File | Purpose |
+|---|---|
+| `upload_fw34.bin` (98,816 bytes) | Drop on MSC volume to upload fw_34's app code to flash `0x08008000+`. Header: `[0]=0x02, [1..4]=BE32(0x18000), [5..8]=0`. Verified live to upload byte-perfect. |
+| `upload_fw34_reset.bin` (1 byte = `0x00`) | Drop AFTER the upload to trigger SYSRESETREQ. Bar reboots into the new firmware. |
+| `upload_test_pattern.bin` (98,816 bytes) | Self-identifying test payload — each 4-byte word contains BE32 of its destination flash address. Used to verify the upload protocol end-to-end by reading flash via SWD and checking every word matches expected value. |
+| `upload_test_reset.bin` (1 byte = `0x00`) | Same as upload_fw34_reset.bin — generic reset trigger. |
 
 ## Dead-ends (lessons learned)
 

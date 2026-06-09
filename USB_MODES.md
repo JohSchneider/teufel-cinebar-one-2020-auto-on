@@ -1,5 +1,17 @@
 # Teufel Cinebar One — USB modes & service entry
 
+## ⚠️ Status: This document is superseded — see `MSC_PROTOCOL.md`
+
+This doc captures the false starts and misdirections from 2026-06-08's MSC investigation. Key chronology:
+
+- **First hypothesis (in this doc, written 2026-06-08):** PA0-LOW + EEPROM I²C2 handshake in the app at `0x0800E928`/`0x0800ED10` is the USB-MSC firmware-update path. Documented at length.
+- **Disproved (2026-06-09):** verified live that PA0-LOW does run the service-mode chain, but it never enables USB. Service mode initializes the CEC peripheral instead (see `CEC_PROTOCOL.md`). The PA0+EEPROM path turned out to be HDMI-CEC factory test, NOT USB-MSC.
+- **Actual MSC mechanism (2026-06-09):** lives entirely in the BOOTLOADER (`0x08000000-0x08007FFF`), reachable via PA1-LOW at boot. We verified it end-to-end: PID `0x0004` enumerates, 96 KB firmware uploaded byte-perfect, type-0 reset trigger fires SYSRESETREQ.
+
+**For the canonical MSC documentation, see `MSC_PROTOCOL.md`.** The text below is preserved for historical context.
+
+---
+
 ## TL;DR
 
 The Cinebar One's single USB connector is fed through a **USB mux IC** (small SMD near the connector — marking guess "2WG 89J P7LL", exact part unconfirmed). The mux routes USB to one of two endpoints:
