@@ -147,6 +147,12 @@ openocd -f interface/stlink.cfg -f target/stm32f0x.cfg \
 
 If something goes wrong (HardFault on boot), you can always reflash the original dump — the bootloader is in chip's system memory ROM and isn't touched by our writes.
 
+### Sidebar: a tempting but wrong "fix" (fw_24)
+
+To prevent IR-power presses from triggering a transition we couldn't observe cleanly, we briefly built `firmware_24_nop-transition-state.bin` — a one-byte patch that turned the entire `transition_state` function into `bx lr` (immediate return). Boot HardFault. **Why:** `transition_state(2)` is also called *during boot init* to bring the bar from standby to active. NOP'ing it leaves the DSP and audio rail uninitialized, and the first byte the bar's normal main loop reads from a peripheral that's not powered yet... HardFault.
+
+**Lesson:** before you NOP a function, search every caller. If any caller runs at boot or during init, you can't NOP the function — you need a more surgical patch (e.g., NOP the specific call site that's bothering you).
+
 ---
 
 ## Phase 3 — live debugging primer
@@ -231,6 +237,42 @@ So PC15 is **the** Toslink rail master. The earlier patch (NOP all three) was ov
 
 **Lesson:** when static analysis groups multiple suspects, **bisect via GDB-driven register writes** while measuring on the bench. The conclusion was a single byte change (NOP only one of the three writes), and behavior I could verify.
 
+### Sidebar: the sequential-confound dead end (fw_06/07/08/22)
+
+How we got to "NOP all three" in the first place:
+- **fw_06**: NOP'd PC15-LOW write only. Toslink Vcc still dropped in standby. (= didn't work.)
+- **fw_07**: + NOP PB7-LOW. Still dropped. (= didn't work.)
+- **fw_08**: + NOP PA2-LOW. Rail stays up! (= "works"... or so we thought.)
+- **fw_22**: same three NOPs, plus wake-on-SPDIF logic.
+
+We declared victory and shipped fw_22 as our productive firmware for weeks.
+
+What actually happened: between each test, the bar was REFLASHED and POWER-CYCLED. Each new firmware INITIALIZES the rail (PC15 HIGH, PB7 HIGH, PA2 HIGH) at boot. After fw_06 → reflash → boot → at boot, PC15 is already HIGH; standby-LOW gets NOP'd. But there's NO subsequent active-entry that re-sets PC15 (because nothing reset it). So we couldn't tell which of the three writes was THE one — we'd cumulatively patched them all.
+
+The right test was the live GDB-driven bisection: keep the bar running, drive ONE pin LOW, measure. We did this only once we noticed the bar's DSP was still warm in standby (red LED, current draw way higher than expected) — months after declaring victory.
+
+**Lesson:** if you patch-flash-reboot-test in sequence, each test starts from a different state. Use live GDB to manipulate ONE variable at a time without reboots between observations.
+
+### Sidebar: pins that are connected but don't do anything (PA3)
+
+The firmware contains a function `is_audio_active()` at `0x0801041C` that reads PA3 and returns its value. From a static read, that's "PA3 = SPDIF activity detect." From the bench:
+
+```bash
+# Bench truth table for PA3 across all states:
+gdb-multiarch -batch \
+  -ex 'target extended-remote :3333' -ex 'monitor halt' \
+  -ex 'printf "GPIOA IDR = 0x%08x  (PA3 = bit 3)\n", *(unsigned int*)0x48000010' \
+  -ex 'monitor resume' -ex 'detach' -ex 'quit'
+# Active+playing:  GPIOA IDR = ...e3 (bit 3 = 0)
+# Active+silent:   GPIOA IDR = ...e3 (bit 3 = 0)
+# Standby:         GPIOA IDR = ...e3 (bit 3 = 0)
+# All 6 scenarios: PA3 = 0
+```
+
+PA3 reads LOW in every scenario. The actual SPDIF data appears on PA4 (which the firmware *doesn't* read). Whatever's between the Toslink module and PA3 (we found a SOT-23-5 chip marked `Z045` near the receiver) doesn't carry usable signal in this firmware's configuration — probably missing a control signal we couldn't identify.
+
+**Lesson:** just because the firmware reads a pin doesn't mean the pin is meaningfully connected. **Verify with a bench truth table** across the states where the pin should differ. If it doesn't differ, the firmware is reading a dead wire.
+
 ---
 
 ## Phase 5 — the RAM trampoline trick (dynamic capture of opaque APIs)
@@ -276,6 +318,54 @@ trampoline:
 Two big gotchas we hit:
 - **Cortex-M0 doesn't have `B.W` (the 32-bit unconditional branch).** Only `BL` is 32-bit. For long jumps, use `ldr r3, [pc, #imm]; bx r3`.
 - **Stack balance is fragile.** Push/pop must match exactly. We had several HardFaults before getting it right.
+
+### Sidebar: the B.W disaster (fw_26 / fw_27 / fw_28)
+
+It took THREE failed firmwares before we found the B.W issue:
+
+- **fw_26** (`nop-and-ring-log`): full ring-buffer trampoline. Boot HardFault.
+- **fw_27** (`simple-notify-log`): simplified — just store args, no ring. Boot HardFault.
+- **fw_28** (`passthrough-tramp`): pass-through with NO logging at all — just displace + jump back. **Still HardFault.**
+
+That's the diagnostic moment: fw_28 didn't add any work, but it still crashed. So the problem was in the **redirect mechanism itself**, not the logging code.
+
+The smoking gun: I'd written `b.w` (`0xF000 0xBE60`) for the unconditional jump back to `notify_body+2`. On ARMv7-M (Cortex-M3+), that encodes a valid 32-bit unconditional branch. On ARMv6-M (Cortex-M0/M0+), `0xF000 0xBExx` is an **UNDEFINED** instruction → HardFault on first execution.
+
+The fix in fw_29:
+
+```asm
+; WRONG (ARMv7-M only):
+b.w  notify_body+2
+
+; RIGHT (ARMv6-M compatible):
+ldr  r2, [pc, #0x30]   ; load target literal
+bx   r2                 ; branch (clobbers a caller-saved reg)
+```
+
+Add a literal `0x0800BBDF` (= `notify_body+2` with Thumb bit set) somewhere reachable by `pc-relative load`. Use a caller-saved register (r0-r3, r12) for the temporary.
+
+**Lesson:** know your ISA variant. On Cortex-M0, the only valid 4-byte Thumb-2 instructions are: `BL`, `MRS`, `MSR`, `ISB`, `DSB`, `DMB`. **No** `B.W`, no `LDR.W`, no `MOV.W`. The `disasm.txt` from objdump WILL show some `b.w` instructions in the firmware — those are bytes that happen to disassemble that way, **not** valid code paths (or they'd HardFault).
+
+### Sidebar: the off-by-one that cost a day (the LIMIT byte)
+
+After getting fw_29 working, we mapped out the IR ring buffer. Every press pushed (channel=12, value=...) to the queue. But pressing "power" gave `notify(12, 0x0201)` — and our static decode of cmd_id=12's dispatch said byte `0x02` of `value` selects a sub-handler... which was "no-op."
+
+The user pushed back: "but pressing power DOES turn the bar off, so this can't be a no-op handler!"
+
+The dispatch helper at `0x080108E2` reads a byte table inlined right after the BL site. The convention I'd guessed was: byte[0] = first case offset, byte[1] = second case offset, etc. So I counted four 0x49 bytes after the dispatch BL → cmd_id=12 → 5th entry → no-op handler.
+
+The user's pushback forced a careful re-read. The actual convention: **the first byte of the inline table is the LIMIT (= max valid index), and the case offsets start at byte 1.** So:
+- LIMIT byte = 4 (i.e., valid cmd_id range 0..4)
+- byte[1] = handler for cmd_id 0
+- byte[2] = handler for cmd_id 1
+- ...
+- byte[5] = handler for cmd_id 4
+
+Five 0x49 bytes, not four. We'd off-by-one'd the entire IR mapping.
+
+After fixing: `notify(12, 0x0201)` → cmd_id sub-dispatch → power-toggle handler at `0x0800BF90`. Everything else fell into place.
+
+**Lesson:** if your model says "this should do nothing" but the user observes it DOES something, your model is wrong. **Re-verify byte counts** and bit positions; off-by-one is the most common error in this kind of work. And: **listen to the user with the device in their hands.** The pushback IS the data.
 
 Once it worked: press a button, halt, dump `0x20003E00..3E80`:
 
@@ -367,11 +457,81 @@ Everything we'd been reverse-engineering was the application. The bootloader was
 
 The lesson cost us about half a day. Worth it — once we understood the split, the rest of the MSC investigation came together fast.
 
+### Sidebar: the PA15 mux-SEL hypothesis (live-tested wrong)
+
+When chasing the USB mux SEL pin, the user noticed a trace from the suspected mux IC going "towards PA15." We built a quick GDB script to drive PA15 LOW via open-drain output:
+
+```gdb
+monitor halt
+# Configure PA15 as output open-drain, drive LOW
+set *(unsigned int*)0x48000018 = (1 << 31)   ; BSRR reset bit for PA15
+set *(unsigned int*)0x48000004 = (*(unsigned int*)0x48000004) | (1 << 15)   ; OTYPER bit = OD
+set *(unsigned int*)0x48000000 = (*(unsigned int*)0x48000000 & ~(0x3 << 30)) | (0x1 << 30)   ; MODER = output
+monitor resume
+```
+
+Watched dmesg + lsusb: zero change. Mux didn't flip.
+
+Static check: PA15 is never read, written, or configured by any firmware code we could find. The IDR reads HIGH idle (pulled HIGH by something external). It's a connection to the daughter board, but its function on the daughter side is unknown.
+
+The user then methodically probed each PCB test pad with a multimeter while attempting USB enumeration → discovered the actual mux SEL is at testpad **T211**, completely independent of any STM32 GPIO. (Later: when MSC mode is active, T211 reads 3 V automatically. Either there's an STM32 pin we still missed, or — more likely — the USB mux IC auto-switches on D+ pull-up presence and T211 is just a mux-status output that happens to expose the routing.)
+
+**Lesson:** PCB trace observations through a closed case are fuzzy. Test the hypothesis with a live GDB-driven write before committing to a theory. And: an STM32 GPIO that's "never accessed by firmware" really IS dead from the firmware's perspective — don't try to make it fit a narrative.
+
 ---
 
 ## Phase 8 — full protocol RE: the USB-MSC firmware-upload
 
 With the bootloader / application split clear, the picture of the bar's USB MSC mode snapped into focus. The bootloader has its own SCSI dispatcher, FAT12 emulator, and a hidden firmware-update protocol.
+
+### Sidebar: the CEC red herring (~2 days)
+
+Before we cracked MSC, we spent two full days chasing a different "service mode" hypothesis: the **PA0+EEPROM handshake in the application** at `0x0800E928` / `0x0800ED10`.
+
+The static evidence was compelling:
+- An RTX thread polling PA0 for LOW
+- An I²C transaction at slave address `0xA0` (= classic 24Cxx EEPROM)
+- Validation of returned bytes (`[0]==2, [1]==3, [2]∈valid_range`)
+- A USB MSC device descriptor in flash (PID `0x0004`, "TEUFEL CINEBAR COMPACT" inquiry string)
+- A FAT12 image baked into flash
+
+The story we told ourselves: "PA0 LOW + EEPROM contents → bar boots into USB MSC firmware-update mode." We even built a test firmware (`fw_36`) that bypassed both the PA0 read and the EEPROM check, expecting MSC to enumerate.
+
+It didn't. Instead:
+- Thread state confirmed the "service mode entered" branch (`state[+9] = 1`)
+- `RCC_APB1ENR` showed bits 22 (I²C2EN) and 30 (CECEN) added — but NOT bit 23 (USBEN)
+- USB peripheral remained dormant
+- No MSC enumeration
+
+We went down deep into chasing "why isn't USBEN being set?" and built fw_37 (a shim that force-enables USBEN). Still no MSC.
+
+Eventually we traced the I²C2 EEPROM handshake → the type-2 handler at `0x08003C80` (in this app's path) → the CEC peripheral init at `0x0800EE9C` which:
+- Enables CECEN (`RCC_APB1ENR` bit 30)
+- Configures PA5 as AF1 (the CEC line)
+- Sets up a CEC handle struct at `0x200026F8`
+- Enables NVIC IRQ 30 = **CEC_CAN_IRQn**
+
+`service_inner(r0=5)` was a **CEC operation**, not a USB operation. The whole PA0+EEPROM chain is for **HDMI-CEC factory test**, not USB MSC.
+
+The real MSC entry mechanism was in the BOOTLOADER, which we hadn't touched yet (and didn't even know existed until phase 7's "main() isn't what we thought it was" discovery).
+
+**Lesson:** strong static evidence can still be evidence for the WRONG thing. The USB MSC scaffold in this firmware exists because the bootloader has its own copy of MSC class code (descriptors, FAT12 image, SCSI handlers). When grep'ing for "USB MSC" in the binary, you'll find that scaffold — but it's compiled into the BOOTLOADER, not used by the app. The app has the *appearance* of USB MSC (descriptors, strings) only because they're duplicated/shared across boundaries.
+
+When you find "X service mode" code that DOES things but doesn't achieve the goal, ask: **what other mode does it look like?** In our case, the "service mode" was real — just for CEC, not USB. The opcodes our dispatch handler recognized (0x36 `<Standby>`, 0x44 `<User Control Pressed>`, 0x82 `<Active Source>`, etc.) are textbook HDMI-CEC consumer opcodes. Once that pattern clicked, the entire app's service mode mapped to factory test, not firmware update.
+
+### The reframe
+
+After accepting CEC ≠ MSC, the question became: **does this bar have ANY USB MSC at all?**
+
+The bootloader literal `0x40005C00` (= USB peripheral base) appears exactly once in the bootloader code at `0x080032B0`. Following that single reference led to:
+- USB descriptor with PID `0x0004` baked at `0x08003F8E`
+- FAT12 image with "TEUFEL CBO" label
+- A SCSI dispatcher that recognizes WRITE(10), READ(10), INQUIRY, etc.
+- A bootloader main `0x080039D4` that READS PA1 (not PA0) and either jumps to the app or enters the MSC code path
+
+That last point is the key — **the bootloader's MSC entry is on PA1, not PA0**. PA1 is the IR receiver. Holding any TV remote button at boot pulses PA1 LOW (38 kHz IR carrier) and triggers MSC mode. No firmware modification needed.
+
+---
 
 **Discovery sequence:**
 
@@ -451,6 +611,115 @@ With the bootloader / application split clear, the picture of the bar's USB MSC 
 9. **The reset trigger** — write a 1-byte file containing `0x00`. Bootloader sees type-0 → SYSRESETREQ → bar reboots into the freshly-uploaded firmware.
 
 **Entry without firmware modification:** the bootloader reads PA1 (= IR receiver line) at `0x08003A6C`. If PA1 is LOW at that read, the bootloader skips the app-validity check and goes straight to MSC. PA1 idles HIGH but pulses LOW under a 38 kHz IR signal — **so holding any TV remote button at power-on triggers MSC mode**. No tools, no patches, no opening the case.
+
+### Sidebar: the "0x30 fill" mystery
+
+Early in MSC investigation we wrote a small test file to the MSC volume:
+
+```bash
+echo "test1234" > /media/.../Teufel\ CBO/small.txt
+```
+
+Read it back — 9 bytes of `'0'` (= 0x30 ASCII).
+
+That was confusing. Did the bootloader transform our data? Was it a buffer initialization side effect? Was the FS corrupt?
+
+Hours later, we found the `msc_read_backend` at `0x08000234`:
+
+```
+read(sector, dst, length):
+  if sector < 5:
+    memcpy(dst, FAT12_IMAGE_RAM + sector*512, length*512)
+  else:
+    memset(dst, 0x30, length*512)
+```
+
+That's where the `0x30` comes from. For sectors >= 5 (= the data area, where user files live), the bootloader doesn't actually store anything — read always returns ASCII `'0'` fill. **Writes** to those sectors go to the firmware-update state machine, not to any persistent file storage.
+
+This explained:
+- Why `version.txt` read OK (it's at cluster 2 = sector 4, < 5 → real RAM read)
+- Why user-created files read as 9 (or 17 or whatever) ASCII zeros (= 0x30 fill, truncated to file length by FAT)
+- Why directory entries DO persist across power-cycle (= sector 3, < 5 → real RAM, plus the bootloader writes the FAT12 RAM image back somewhere persistent... maybe)
+
+**Lesson:** when read-back differs from write, the storage medium is doing something. Look for the actual READ implementation, not just the WRITE. The asymmetry is often the whole story.
+
+### Sidebar: the broken HBP — when GDB lies
+
+Late in Phase 7-8 we hit a really nasty bug: `hbreak` reported success in GDB ("Hardware assisted breakpoint 1 at 0x08002CA6") but the breakpoint never fired. We spent hours setting BPs at functions we knew were called — `main` entry, `osKernelGetTickCount` (called 1000× per second), the bootloader main. Nothing fired.
+
+Diagnostic that pinned it: read the FPB (Flash Patch & Breakpoint) hardware registers directly:
+
+```bash
+gdb-multiarch -batch -ex 'target extended-remote :3333' \
+  -ex 'monitor halt' \
+  -ex 'printf "FP_CTRL  = 0x%08x  (bit 0 = enable)\n", *(unsigned int*)0xE0002000' \
+  -ex 'printf "FP_COMP0 = 0x%08x  (address + enable bit)\n", *(unsigned int*)0xE0002008' \
+  -ex 'monitor resume' -ex 'detach' -ex 'quit'
+```
+
+`FP_CTRL = 0x41` (bit 0 = enabled, bits 7:4 = 4 comparators available) but `FP_COMP0 = 0` — GDB had told us the BP was set, but **OpenOCD never actually wrote the comparator register**. Some bug in the GDB ↔ OpenOCD FPB handoff.
+
+Workaround: use OpenOCD's TCL command interface directly, bypassing GDB:
+
+```bash
+( echo "halt"
+  echo "bp 0x08002CA6 2 hw"     ; OpenOCD-native HBP install
+  echo "bp"                       ; list to confirm
+  echo "resume"
+  echo "exit"
+) | nc -q 1 127.0.0.1 4444
+```
+
+This wrote `FP_COMP0` directly. Breakpoints fired immediately.
+
+**Lesson:** when a debugger feature fails silently, **read the hardware state directly** to confirm. Don't trust the debugger's bookkeeping if behavior contradicts it. And: have a fallback (TCL, telltale RAM writes, manual register pokes) for when the primary path breaks.
+
+### Sidebar: the one-shot self-destruct (fw_38's design flaw)
+
+fw_38 was our experimental "force MSC mode" build. It had three patches:
+- 1-byte at `0x03A89`: flip `bne` to unconditional `b` (forces "skip app, enter MSC" path in bootloader)
+- 4 bytes at `0x03AD0`: BL retarget pointing to a shim in the app region
+- 32-byte shim at `0x0801E880`: sets USBEN before calling the original USB init
+
+Live-tested: MSC enumerated, full 96 KB upload validated. 
+
+Then we triggered the type-0 reset and the bar HardFaulted. Why?
+
+**The shim was in the APP region.** The type-2 handler erases the entire 96 KB app region (`0x08008000-0x0801FFFF`) before programming new content. Our shim at `0x0801E880` is INSIDE that region. When the upload starts, the erase wipes the shim.
+
+After the upload + reset:
+- Bootloader runs main
+- The `bne→b` patch (in BOOTLOADER region, survived) forces "skip app"
+- `bl 0x08003AD0` → patched BL → jumps to `0x0801E880` 
+- `0x0801E880` now contains `0xFFFFFFFF` (or whatever app content was uploaded, not our shim)
+- CPU executes `0xFFFF` → UNDEFINED → HardFault
+
+The bar is bricked until SWD-reflashed. **One-shot self-destruct** by design.
+
+The fix would be `fw_39` with the shim in the bootloader region (`0x080040D8` has 12 KB of free space) — but we didn't bother building it because we'd already validated the protocol AND we'd discovered the PA1-LOW gesture which needs no firmware modification at all.
+
+**Lesson:** when you place patch shims, **map their flash regions vs what your own code might erase**. The MSC-update path erases its own app region — any patches that need to survive across an MSC update need to live in the immutable bootloader region.
+
+---
+
+## Anatomy of a dead end
+
+We hit ~12 dead ends documented above. Two patterns recurred:
+
+**Pattern 1: the convincing-but-wrong story.** Strong static evidence supports a hypothesis. You build a patch around the hypothesis. The patch doesn't deliver the expected behavior — instead it does *something else* that's also evidence for the hypothesis (we set USBEN! we got a state machine progressing!). You spend another day chasing why the "next step" of the hypothesis isn't happening, when the hypothesis itself is wrong. Examples in this journey:
+- fw_36 (PA0+EEPROM bypass — turned out to be CEC, not MSC)
+- The PA15 mux-SEL hypothesis (PCB trace observation that didn't match)
+- The "single state byte = the answer" fix in Phase 2
+
+**Pattern 2: the sequential confound.** You patch-flash-reboot-test in sequence. Each test starts from a fresh state. By the third or fourth test, you've cumulatively patched multiple things and can't isolate which one is doing the work. Example:
+- fw_06 → fw_07 → fw_08 → fw_22 (NOP'd three pins one at a time, ended up with all three NOP'd, no idea which one mattered)
+
+**Defense against both:**
+- Whenever possible, **manipulate one variable at a time via live GDB**, not via patch-flash-reboot.
+- Whenever a model predicts X and observes "X happened but the further consequences didn't" — re-check the prediction. The model might be partially right (X did happen) but wrong about what X *means*.
+- Listen for the user's pushback. "But pressing power IS turning off the bar" is more reliable than "but my disassembly says the dispatch goes to a no-op."
+
+The dead ends in `gdb/scratch/` and `scratch/build_fw26-33.py` are kept on disk *deliberately*. Each one is a "I tried this and it didn't work for these specific reasons" datapoint. Future-you (or your colleagues) will be glad of them.
 
 ---
 
