@@ -103,7 +103,7 @@ print(f"Patch space at 0x{SHIM_ADDR:08x} ({SHIM_LEN} bytes) is clean (0xFF)")
 #   +0x18: <literal 0x4002101C>   1C 10 02 40  (RCC_APB1ENR address)
 #   +0x1C: <literal 0x080030B1>   B1 30 00 08  (USB init entry, Thumb bit set)
 shim_halfwords = [
-    0xb507,  # push {r0, r1, lr}
+    0xb503,  # push {r0, r1, lr}   (was 0xb507 = push {r0,r1,r2,lr} — bug!)
     0x4805,  # ldr r0, [pc, #20]
     0x6801,  # ldr r1, [r0]
     0x2201,  # movs r2, #1
