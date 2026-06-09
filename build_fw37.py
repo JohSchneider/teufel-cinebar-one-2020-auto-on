@@ -81,7 +81,7 @@ print("fw_36 base patches verified")
 # --- Patch space check ---
 SHIM_ADDR = 0x0801E880  # 0x0801E800 already has existing shims in fw_36 base
 SHIM_OFFSET = SHIM_ADDR - 0x08000000  # = 0x1E880
-SHIM_LEN = 0x20  # 32 bytes
+SHIM_LEN = 0x30  # 48 bytes (with telltale-write logic)
 existing = img[SHIM_OFFSET:SHIM_OFFSET+SHIM_LEN]
 assert existing == b'\xff' * SHIM_LEN, f"Patch space at 0x{SHIM_ADDR:08x} not erased: {existing.hex(' ')}"
 print(f"Patch space at 0x{SHIM_ADDR:08x} ({SHIM_LEN} bytes) is clean (0xFF)")
@@ -102,24 +102,55 @@ print(f"Patch space at 0x{SHIM_ADDR:08x} ({SHIM_LEN} bytes) is clean (0xFF)")
 #   +0x16: pop {pc}               bd00  (return to main)
 #   +0x18: <literal 0x4002101C>   1C 10 02 40  (RCC_APB1ENR address)
 #   +0x1C: <literal 0x080030B1>   B1 30 00 08  (USB init entry, Thumb bit set)
+# NEW: shim writes a telltale 0xDEADBEEF to RAM[0x20003FFC] at entry.
+# This lets us verify the shim actually executes without relying on HBPs
+# (OpenOCD's FPB management is currently broken).
+#
+# Layout (longer shim — 48 bytes):
+#   +0x00: push {r0, r1, r2, lr}    b507
+#   +0x02: ldr r0, [pc, #28]        4807    -> +0x20: RAM telltale addr 0x20003FFC
+#   +0x04: ldr r1, [pc, #28]        4907    -> +0x24: magic 0xDEADBEEF
+#   +0x06: str r1, [r0]              6001    (write telltale to RAM)
+#   +0x08: ldr r0, [pc, #24]        4806    -> +0x28: RCC_APB1ENR addr
+#   +0x0a: ldr r1, [r0]              6801
+#   +0x0c: movs r2, #1               2201
+#   +0x0e: lsls r2, r2, #23         05d2
+#   +0x10: orrs r1, r2               4311
+#   +0x12: str r1, [r0]              6001
+#   +0x14: ldr r1, [r0]              6801    (readback)
+#   +0x16: pop {r0, r1, r2}          bc07    (restore caller args)
+#   +0x18: ldr r3, [pc, #16]         4b04    -> +0x2C: 0x080030B1 (Thumb)
+#   +0x1a: blx r3                    4798
+#   +0x1c: pop {pc}                  bd00
+#   +0x1e: nop / padding             0000
+#   +0x20: literal 0x20003FFC
+#   +0x24: literal 0xDEADBEEF
+#   +0x28: literal 0x4002101C
+#   +0x2c: literal 0x080030B1
 shim_halfwords = [
-    0xb503,  # push {r0, r1, lr}   (was 0xb507 = push {r0,r1,r2,lr} — bug!)
-    0x4805,  # ldr r0, [pc, #20]
+    0xb507,  # push {r0, r1, r2, lr}  (we push r2 so we can use it)
+    0x4807,  # ldr r0, [pc, #28]
+    0x4907,  # ldr r1, [pc, #28]
+    0x6001,  # str r1, [r0]    (telltale write)
+    0x4806,  # ldr r0, [pc, #24]
     0x6801,  # ldr r1, [r0]
     0x2201,  # movs r2, #1
     0x05d2,  # lsls r2, r2, #23
     0x4311,  # orrs r1, r2
     0x6001,  # str r1, [r0]
     0x6801,  # ldr r1, [r0]
-    0xbc03,  # pop {r0, r1}
-    0x4b02,  # ldr r3, [pc, #8]
+    0xbc07,  # pop {r0, r1, r2}
+    0x4b04,  # ldr r3, [pc, #16]
     0x4798,  # blx r3
     0xbd00,  # pop {pc}
+    0x46c0,  # nop (mov r8, r8) — padding
 ]
 shim_bytes = b''.join(struct.pack('<H', hw) for hw in shim_halfwords)
+shim_bytes += struct.pack('<I', 0x20003FFC)   # literal: telltale RAM addr
+shim_bytes += struct.pack('<I', 0xDEADBEEF)   # literal: magic value
 shim_bytes += struct.pack('<I', 0x4002101C)   # literal: RCC_APB1ENR address
 shim_bytes += struct.pack('<I', 0x080030B1)   # literal: USB init entry (Thumb)
-assert len(shim_bytes) == 32, f"shim is {len(shim_bytes)} bytes, expected 32"
+assert len(shim_bytes) == 48, f"shim is {len(shim_bytes)} bytes, expected 48"
 
 print(f"\nShim ({len(shim_bytes)} bytes at flash 0x{SHIM_ADDR:08x}):")
 for i in range(0, len(shim_bytes), 4):
