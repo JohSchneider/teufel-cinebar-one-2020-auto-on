@@ -746,6 +746,72 @@ The fix would be `fw_39` with the shim in the bootloader region (`0x080040D8` ha
 
 ---
 
+### Sidebar: mapping the front-panel ribbon cable (and the PWM-duty trap)
+
+After fw_38 + the PA1 discovery, the bar's hardware interfaces were *almost* fully decoded. One mystery remained: a **6-pin ribbon cable** from the baseboard to a small front PCB carrying the RGB status LED and the IR receiver. We'd never traced which ribbon pin carried which signal. Multimeter + GDB-driven LED forcing was sufficient for this — no scope, no logic analyzer, no PCB teardown.
+
+**Initial pin convention:** the connector is rectangular with a bevel at one corner. Pin 1 = beveled corner (rightmost), pin 6 = leftmost. The user's baseline reading was puzzling:
+
+```
+Pin 6 = 0.0 V    (likely GND)
+Pin 5 = 1.8 V    (??? — not a CMOS logic level)
+Pin 4 = 3.3 V
+Pin 3 = 3.3 V
+Pin 2 = 3.3 V
+Pin 1 = 3.3 V    (5 pins at 3.3 V is too many for VCC)
+```
+
+Hypothesis: PWM cathodes for R/G/B would show variable voltage as the LED animates. Four steady 3.3 V pins suggested either a digital-serial LED control (e.g., a small LED-driver IC on the front PCB taking SCL/SDA) — or, more boringly, **a PWM-duty trap**.
+
+**The trap.** TIM3 was configured `ARR = 0xFFFF` (16-bit), polarity inverted (`CCxP = 1`). Driving a CCR value gives a duty cycle of `CCR / ARR`. The LED palette uses 8-bit color levels (0-255), so any single channel maxes out at `CCR = 0xFF`. That's `0xFF / 0xFFFF ≈ 0.39%` active LOW = **99.6% HIGH** = multimeter reads ~3.28 V regardless of "color." The LED *did* respond visibly (a 0.4% pulse at 16-bit resolution is still visible), but the average voltage on the cathode looked indistinguishable from steady 3.3 V.
+
+**The reset.** Override the CCR registers directly via OpenOCD TCL with **maximum** values (full duty, not 8-bit palette values):
+
+```bash
+( echo "halt"
+  echo "mww 0x40000434 0xFFFF"   # CCR1 = max  → G channel full-on
+  echo "mww 0x40000438 0x0000"   # CCR2 = off  → B channel off
+  echo "mww 0x4000043C 0x0000"   # CCR3 = off  → R channel off
+  echo "exit"
+) | nc -q 1 127.0.0.1 4444
+# Probe each ribbon pin → exactly one drops to ~0 V = the G cathode
+```
+
+One channel at a time → one ribbon pin dropped per test. Result:
+
+```
+CCR1 = 0xFFFF (G) → pin 2 drops to 0.25 V
+CCR2 = 0xFFFF (B) → pin 3 drops to 0.25 V
+CCR3 = 0xFFFF (R) → pin 4 drops to 0.25 V
+```
+
+The remaining unknown was pin 1: VCC (3.3 V rail) or IR_RX (= PB1, idle HIGH)? **Press a remote button while probing**: if the voltage wobbles, it's IR. Pin 1 stayed rock-steady at 3.3 V — so pin 1 = VCC. The 1.8 V on pin 5 dipped during remote activity → pin 5 = IR_RX, with the front PCB's IR receiver running on 1.8 V logic (front PCB has a local LDO + low-voltage IR receiver chip; the STM32 still recognizes 1.8 V as HIGH since V<sub>IH</sub> on F072 is ~0.45 × V<sub>DD</sub> = 1.49 V at V<sub>DD</sub> = 3.3 V).
+
+**The AFR-stale gotcha.** While decoding which STM32 pins drove which channels, I read `GPIOA AFRL = 0x00000001` from an earlier captured snapshot — that said PA6/PA7 were AF0 (= SPI1 functions, not TIM3). But the bench observation clearly said pins 2 and 3 *were* driven by TIM3. Re-reading AFRL **live** showed `0x11000000` (= PA6/PA7 both AF1 = TIM3_CH1/CH2). **Lesson: a snapshot from earlier in the session is not the truth-of-now**; the firmware reconfigures peripherals continuously. When the model and observation disagree, reread the register first.
+
+**The 0.25 V V<sub>OL</sub> diagnostic.** Why didn't pin 4 (R, full-duty) drop to *exactly* 0 V? **0.25 V is the STM32 GPIO's V<sub>OL</sub> under load** — the pin is sinking LED forward current (~5-10 mA × ~30 Ω output impedance ≈ 0.2-0.3 V). If the pin were just a digital select (no current load), V<sub>OL</sub> would be near 0 V. So the 0.25 V reading is itself evidence that the pin is a true current-sinking cathode driver, not a logic select for an external LED-driver IC. The user had flagged exactly this concern ("could the PWM only drive the common anode?") — the bench evidence ruled that out.
+
+**The intermediate-duty confirmation.** Final sanity check: predict an intermediate value. With `CCR3 = 0x4000` (25% duty), the average should be `0.75 × 3.3 V + 0.25 × 0.25 V ≈ 2.54 V`. Measured: **2.5 V** exactly. Three independent cathode-PWM signals — confirmed.
+
+**Final 6-pin map:**
+
+| Ribbon pin | STM32 pin | Function | Idle voltage | Notes |
+|---|---|---|---|---|
+| 1 | — | VCC 3.3 V | 3.3 V | LED anode + front-PCB logic supply |
+| 2 | PA6 | G PWM (TIM3_CH1, AF1) | 3.3 V | Active LOW, sinks LED current |
+| 3 | PA7 | B PWM (TIM3_CH2, AF1) | 3.3 V | Active LOW, sinks LED current |
+| 4 | PB0 | R PWM (TIM3_CH3, AF1) | 3.3 V | Active LOW, sinks LED current |
+| 5 | PB1 | IR_RX (1.8 V CMOS) | 1.8 V | Local LDO on front PCB |
+| 6 | — | GND | 0 V | |
+
+**Lessons:**
+1. **Always check what range your test inputs cover.** Driving CCR with palette values (0-255) against a 16-bit ARR gave 0.4% duty — the LED visibly responded but the average voltage didn't change measurably. Setting CCR to the *actual range you want to test* (full-scale, mid-scale) makes the modulation visible to a multimeter.
+2. **V<sub>OL</sub> under load is a free hardware-topology probe.** A pin that drops to ~0.25 V (not ~0 V) when driven LOW is sourcing or sinking current. That tells you whether it's a logic output or a current driver, without needing a scope or load test.
+3. **Predict before probing.** "Pin 4 at 25% duty should read 2.5 V" was a falsifiable prediction; observing 2.5 V is far stronger evidence than just observing "pin 4 dropped." The intermediate-duty test was the clincher that ruled out the "static enable" hypothesis.
+4. **Live-read the register state, don't trust cached snapshots.** The AFRL discrepancy wasted ~10 minutes of confusion. STM32 peripheral state is mutable; re-read before reasoning.
+
+---
+
 ## Anatomy of a dead end
 
 We hit ~12 dead ends documented above. Two patterns recurred:

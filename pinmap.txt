@@ -6,6 +6,13 @@ Method:   Static analysis of 33 calls to HAL_GPIO_Init at 0x0800D4FC,
           plus live-debug findings from `mylog.txt` (GDB watchpoint session)
           and `is_audio_active()` decode at 0x0801041C.
 
+NOTE 2026-06-09: This file is a historical artifact from the early RE pass.
+Several entries below are now known to be wrong — most notably PA1 (listed
+here as "IR receiver candidate"; actually the chassis SUB PAIRING button)
+and PB1 (the actual IR receiver output). For the current authoritative
+pin map, see `symbols.md` — sections "Key hardware-pin mappings",
+"GPIO usage (computed bases, summary)", and "Front-panel ribbon cable".
+
 GPIO bases are computed inline via `MOVS Rn, #9; LSLS Rn, Rn, #27` (=0x48000000
 for GPIOA) plus port-specific variants — that's why a naive literal scan for
 "0x48000000" finds zero hits despite GPIOA being heavily used.

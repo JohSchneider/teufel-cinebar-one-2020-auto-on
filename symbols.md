@@ -164,7 +164,9 @@ Called by `bl` from each dispatch site; the inline table is the bytes immediatel
 | **PF0** | DSP reset (active LOW: LOW = held in reset) | `transition_state` writes via `GPIO_WriteBit(GPIOF, 0x0001, val)` at `0x0800A76C`/`0x0800A828` (LOW) and `0x0800A7F0` (HIGH) |
 | **PB8/PB9** | I²C1 SCL/SDA (AF1) — **DSP control bus** | active in stock active mode; GPIOB AFRH bits[7:0] = 0x11 |
 | **PB10/PB11** | I²C2 SCL/SDA (AF1) — **EEPROM / service-mode bus** | reconfigured from input to AF1 by the PA0-LOW service-mode peripheral init (`0x0800F00C`). GPIOB AFRH bits[15:8] = 0x11 after entering service mode. |
-| **PA1** | (?) IR receiver — VeryHigh speed Input | configured by `HAL_GPIO_Init` call at `0x0800B456`; not yet hardware-verified |
+| **PA1** | ★ Chassis SUB PAIRING button (Input VeryHigh, idle HIGH external pull-up) | also the **bootloader's MSC entry gesture** — hold SUB PAIRING while powering on → PA1 LOW → MSC mode. Verified live via GPIO scan 2026-06-09 (toggles only during button press, not during IR activity). See [`PB1`] entry below for the actual IR receiver. |
+| **PB1** | ★ IR receiver output (1.8 V CMOS, idle HIGH) | verified live via GPIO scan + bench multimeter probing. Connects to ribbon **pin 5** — 1.8 V indicates the front PCB has a local LDO + low-voltage IR receiver chip running on 1.8 V logic, with the level still recognized by the STM32 (V<sub>IH</sub> threshold ~1.5 V at V<sub>DD</sub>=3.3 V). |
+| **PA6 / PA7 / PB0** | TIM3_CH1/CH2/CH3 PWM (AF1, active-LOW polarity via CCER bits 1/5/9, ARR=0xFFFF) | drive the front-panel RGB LED — **G/B/R** on ribbon **pins 2/3/4** respectively. Common-anode LED: anode = ribbon pin 1 (VCC 3.3 V); cathodes sink through current-limit resistors back to STM32 → higher CCR = more time LOW = brighter. |
 
 ### transition_state side-effect map
 
@@ -436,6 +438,26 @@ Full table in `/tmp/firmware/pinmap.txt`. Key pins:
 | Bluetooth                  | CSR/Qualcomm A64215      | A2DP receive; labelled SPI debug header on daughter board |
 | Wireless subwoofer link    | SWA12-TX (FCC NKR-SWA12) | Proprietary 2.4 GHz audio link to sub       |
 | Audio rail control         | **PA2 (★ identified 2026-06-05)** | STM32-gated via PA2 → SOT-23-5 buffer/load-switch enable. Active=HIGH (Toslink Vcc ≈ 3.0V), standby=LOW (Toslink Vcc ≈ 0.8V leakage). Identified via Recipe D GDB breakpoint in `GPIO_WriteBit` BRR path. |
+
+### Front-panel ribbon cable (6-pin, baseboard ↔ front PCB)
+
+Carries the RGB status LED and the IR receiver. Verified live 2026-06-09 via multimeter + GDB-driven TIM3 CCR forcing (task #66). Connector is rectangular with a beveled corner at pin 1; counting from the bevel:
+
+| Ribbon pin | STM32 pin | Function | Idle voltage | Notes |
+|---|---|---|---|---|
+| 1 | — | **VCC 3.3 V** | 3.3 V | LED anode + supply to front-PCB local LDO (1.8 V for IR receiver) |
+| 2 | **PA6** | **G PWM** (TIM3_CH1, AF1) | 3.3 V | Active LOW — sinks LED current. V<sub>OL</sub> ~0.25 V under load. |
+| 3 | **PA7** | **B PWM** (TIM3_CH2, AF1) | 3.3 V | Active LOW — sinks LED current. |
+| 4 | **PB0** | **R PWM** (TIM3_CH3, AF1) | 3.3 V | Active LOW — sinks LED current. |
+| 5 | **PB1** | **IR_RX** | 1.8 V | 1.8 V CMOS from front-PCB IR receiver (running off local LDO). STM32 V<sub>IH</sub> ~1.5 V → still recognized as HIGH. |
+| 6 | — | **GND** | 0 V | |
+
+**LED hookup:** common-anode RGB. Anode tied to ribbon pin 1 (VCC); each cathode goes through a current-limit resistor on the front PCB to its corresponding STM32 PWM pin. TIM3 polarity is inverted (CCER bits 1, 5, 9 set), so:
+- `CCRn = 0x0000` → output HIGH 100% → cathode HIGH → **LED OFF**
+- `CCRn = 0xFFFF` (ARR=0xFFFF) → output LOW 99.998% → cathode LOW → **LED full brightness**
+- `CCRn = 0x4000` → 25% LOW → multimeter reads ~2.5 V on the cathode
+
+**Spoofing inputs onto the ribbon:** if you wanted to inject an IR signal externally (e.g., to trigger MSC entry without the SUB PAIRING button), use **1.8 V logic** on pin 5 — not 3.3 V. For end-user MSC entry, however, the chassis SUB PAIRING button (PA1) is simpler and case-internal access isn't needed.
 
 ---
 

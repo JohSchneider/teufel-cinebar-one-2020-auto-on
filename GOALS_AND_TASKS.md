@@ -96,12 +96,13 @@ This phase ended with a "victory" that was actually wrong — we had no baseline
 - End-to-end validated by uploading a self-identifying 96 KB test pattern + reading back via SWD: every word matched
 - Identified the end-user entry gesture: **hold the chassis SUB PAIRING button while powering on** (verified 2026-06-09 via per-pin GPIO scan — PA1 toggles only when the sub-pairing button is pressed; an earlier guess that PA1 was the IR receiver was disproved by the same scan)
 
-### Phase J — Housekeeping and documentation
-*Tasks: implicit*
+### Phase J — Housekeeping, documentation, and ribbon mapping
+*Tasks: #66 + implicit doc work*
 - `MSC_PROTOCOL.md` — canonical protocol documentation
 - `CEC_PROTOCOL.md` — the CEC subsystem we mistook for MSC
 - `USB_MODES.md` — flagged as superseded; preserved for historical context
 - `symbols.md`, `FIRMWARE_VARIANTS.md`, `IR_CODES.md`, `dsp_protocol.md` — final updates
+- **Task #66 — front-panel ribbon cable fully mapped** (6 pins: VCC + 3 LED PWM cathodes via TIM3 + IR_RX at 1.8 V + GND). Multimeter + GDB-driven CCR forcing. Key gotcha: 8-bit palette values (`CCR ≤ 0xFF`) against 16-bit ARR (`0xFFFF`) give only 0.4% duty → multimeter reads ~3.3 V regardless of "color." Drove CCR to full-scale and intermediate (0x4000) values for confirmation. Result documented in `symbols.md` "Front-panel ribbon cable" section + journey-doc sidebar.
 - Reorganized scripts: top-level = productive, `scratch/` and `gdb/scratch/` = dead-ends and one-shot probes
 - `RE_JOURNEY.md` — narrative tutorial walkthrough
 - This file
@@ -133,6 +134,7 @@ The earlier session work (tasks #1-#13) isn't fully preserved in current context
 | #63 | USB-MSC trigger identified statically (PA0 LOW + EEPROM) | I | **Initially "completed" — later found to be CEC, not MSC** |
 | #64 | Build + bench-test `fw_36` (forced PA0-LOW path) | I | Revealed CEC truth |
 | #65 | Verify CEC hypothesis for service mode | I | ★ Reframed Phase I |
+| #66 | Map the 6-pin ribbon cable to the front PCB (LED + IR receiver) | J | ★ Full map: 1=VCC, 2/3/4=G/B/R PWM (PA6/PA7/PB0), 5=IR_RX (PB1, 1.8V CMOS), 6=GND. See `symbols.md` "Front-panel ribbon cable" + the journey doc's ribbon-mapping sidebar. |
 | #67 | Bench-test `fw_37` (USBEN forced) | I | Demonstrated USB peripheral can be brought up |
 | #68 | Bench-test `fw_38` (bootloader MSC mode) | I | ★ MSC works |
 
@@ -144,7 +146,6 @@ The earlier session work (tasks #1-#13) isn't fully preserved in current context
 | #60 | [LOW PRIO] Patch master output gain | Low | Hypothesis weakened by "rare metallic click" symptom (sounds like underrun, not headroom) |
 | #61 | Investigate DSP register `0xB9 = 0x038E7A` (unique boot-time config constant) | Low | Anomaly in DSP register map |
 | #62 | ★ Investigate occasional metallic click | High | Likely I²S underrun or biphase bit-slip — hardware-side, not firmware-patchable |
-| #66 | Map the 6-pin ribbon cable to the front PCB (LED + IR receiver) | Low (revised) | The original motivation (find PA1 for MSC entry) is **resolved** — PA1 is the chassis SUB PAIRING button, not on the ribbon. Ribbon mapping still useful for completeness (identifying which ribbon pin is IR receiver, which are R/G/B LED) but no longer blocks any MSC-related work. PB1 = IR receiver output (verified via GPIO scan) and is probably routed via the ribbon. |
 
 ---
 
@@ -163,7 +164,6 @@ The earlier session work (tasks #1-#13) isn't fully preserved in current context
 
 **Open practical questions:**
 - Task #62: the occasional metallic click — needs hardware-level investigation (logic analyzer on I²S lines, or scope on DAC output)
-- Task #66: ribbon-cable PA1 mapping — multimeter, ~10 minutes, would enable end-user MSC entry without case removal
 
 **Key reusable artifacts:**
 - `patcher/` — shareable scripts that patch a user's own dump (no firmware redistribution)
