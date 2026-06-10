@@ -9,7 +9,16 @@ A third, optional variant additionally **preloads** the bar's persistent setting
 
 Product page: <https://li.teufelaudio.com/cinebar-one-2020-105568000>
 
-> *Ironic footnote*: the **2021** revision of the same bar ships with an "auto on" switch on the back that does roughly what this patch does in software. The 2020 model didn't — so we got to do it the hard way.
+## Is this for me? — 2020 vs 2021 revision
+
+This firmware mod is for the **2020** revision. The 2021 revision already does auto-on natively (via a hardware switch on the back), so it doesn't need any of this. Look at the back of your bar:
+
+| 2020 (this patch applies) | 2021 (you don't need this — flip the switch) |
+|---|---|
+| ![2020 rear](pictures/cinebar-one-2020_connections.png) | ![2021 rear](pictures/cinebar-one-2021_connections.png) |
+| **No `AUTO ON` switch.** Order: HDMI / OPTICAL / SUB PAIRING / AUX IN / USB / POWER. Power input rated **18 V / 3.6 A**. | **Has an `AUTO ON` switch** on the leftmost position. Order: AUTO ON / SUB PAIRING / HDMI TV / OPTICAL / AUX IN / USB / POWER. Power input rated **12 V / 4 A**. |
+
+If your bar has the AUTO ON switch, set it to ON and you're done — no firmware modification needed. The patches in this repo are specifically for the 2020 hardware revision that ships without it.
 
 ---
 
@@ -143,6 +152,20 @@ The PMIC bypass on my unit:
 That hardware repair is independent of the firmware mod in this repo — mentioning it here only in case anyone else's bar fails the same way.
 
 The reverse-engineering was done in collaboration with **Claude** (Anthropic's coding agent). The agent did the bulk of the disassembly analysis, hypothesis generation, and patch-shim assembly; I provided the bar on the bench, the multimeter, the user-level pushback when something didn't match lived UX, and the live SWD/GDB probing. The collaboration model that emerged — including several days of false starts that turned out to be informative — is documented at length in [`RE_JOURNEY.md`](RE_JOURNEY.md).
+
+## Credit where it's due — the actual audio engineering inside
+
+I'm not an audio engineer. But taking the bar apart, I kept stumbling over evidence of people who clearly *were*, and who'd been given budget to do their job properly. A few things that stood out:
+
+* **A real DSP, not a glorified equaliser.** The Renesas **D2-92634-LR** in the middle of the daughter board is a serious audio DSP — the kind of part that ships with proprietary tools and a real instruction set, not a fixed-function tone-control IC. Reverse-engineering the per-mode preset table (see [`dsp_protocol.md`](dsp_protocol.md)) turned up genuinely *distinct* tunings for Music / Movie / Voice — different crossover slopes, different bass-shelf gain, different compressor settings. Someone sat down and voiced each mode. The work shows.
+* **Four identical drivers in a sealed enclosure.** Not a marketing-driven "5.1.X surround" arrangement, just four equally-sized full-range drivers across the front, all damped by purpose-cut acoustic foam fitted to the inside of the housing (visible in the [re-assembly photos](pictures/)). The drivers sit on red-surround mounts that look chosen for excursion rather than appearance, even though they're hidden behind the perforated-metal grille and no one ever sees them.
+* **Lossless digital signal paths.** HDMI ARC + Toslink both bypass the analog stage entirely — the SPDIF data goes straight to the DSP's integrated receiver. The 3.5 mm AUX exists because users expect it, but it's the only path that needs an ADC.
+* **A dedicated wireless link for the subwoofer.** Not just "BT speaker pairing" — a proprietary 2.4 GHz link (SWA12 / FCC ID **NKR-SWA12**) with its own RF module on the baseboard. Latency-bounded enough that you don't get the lip-sync drift that a generic BT sub would give.
+* **Clean isolation between MCU and analog amplification.** The STM32 baseboard (host MCU, control, IR, SPDIF data demuxing) is a separate PCB from the DSP / amplifier daughter board, connected by two pin sockets — a textbook way to keep digital switching noise off the analog supplies. You can see the same design choice in the way standby cuts power to the daughter board independently of the baseboard.
+* **Bootloader + application split with USB MSC firmware update.** This is *infrastructure* work that nobody hears, but it's there: a 32 KB bootloader that exposes the bar as a USB mass-storage device for field firmware updates (see [`MSC_PROTOCOL.md`](MSC_PROTOCOL.md)). The 2020 model has no AUTO ON switch on the back, but it does have a fully functioning over-the-counter update path. Someone planned for this.
+* **vEEPROM for persistent state, not an external flash.** Volume / bass / mode / source are persisted as an append-only log in spare flash sectors (`0x07000`-`0x077FF`). It's a frugal, robust pattern (no extra chip, no wear-levelling worries on a low-write workload) and it's *the* canonical STM32-app technique. Someone read the AN.
+
+The 2020 PMIC failing was unfortunate, but everything around it — the actual *speaker* — feels like the work of people who cared about sound. Crediting that here because: a) it's true; b) the firmware side has plenty of warts (no clean auto-on, the standby state-machine quirks, the rare metallic click) which a casual reader of this repo could mistake for the whole picture. They're not. The bar sounds good.
 
 ---
 
