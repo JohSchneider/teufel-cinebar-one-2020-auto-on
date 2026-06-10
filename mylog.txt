@@ -41,7 +41,7 @@ No symbol table is loaded.  Use the "file" command.
 xPSR: 0xc1000000 pc: 0x080000d4 msp: 0x20001ce8
 No symbol table is loaded.  Use the "file" command.
 quit
-Detaching from program: /home/johannes/teufel-cinebar-one/firmware_1.elf, Remote target
+Detaching from program: <repo>/firmware_1.elf, Remote target
 Ending remote debugging.
 [Inferior 1 (Remote target) detached]
 No symbol table is loaded.  Use the "file" command.
@@ -312,7 +312,7 @@ Continuing.
 
 Program received signal SIGINT, Interrupt.
 0x0800f716 in ?? ()
-Detaching from program: /home/johannes/teufel-cinebar-one/firmware_1.elf, Remote target
+Detaching from program: <repo>/firmware_1.elf, Remote target
 Ending remote debugging.
 [Inferior 1 (Remote target) detached]
 Hardware watchpoint 1: *(unsigned char *)0x200025DC
@@ -340,14 +340,14 @@ Could not insert hardware breakpoints:
 You may have requested too many hardware breakpoints/watchpoints.
 
 Command aborted.
-Symbols from "/home/johannes/teufel-cinebar-one/firmware_1.elf".
+Symbols from "<repo>/firmware_1.elf".
 Remote target using gdb-specific protocol:
-	`/home/johannes/teufel-cinebar-one/firmware_1.elf', file type elf32-littlearm.
+	`<repo>/firmware_1.elf', file type elf32-littlearm.
 	Entry point: 0x0
 	0x00000000 - 0x00020000 is .data
 	While running this, GDB does not access memory from...
 Local exec file:
-	`/home/johannes/teufel-cinebar-one/firmware_1.elf', file type elf32-littlearm.
+	`<repo>/firmware_1.elf', file type elf32-littlearm.
 	Entry point: 0x0
 	0x00000000 - 0x00020000 is .data
 [stm32f0x.cpu] halted due to debug-request, current mode: Thread 

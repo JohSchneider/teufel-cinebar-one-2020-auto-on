@@ -24,7 +24,7 @@ monitor bp
 printf "\nBPs installed. Resuming bar...\n"
 monitor resume
 
-printf "\n=== NOW, on the HOST side: do `echo X > /media/johannes/Teufel\\ CBO/test.txt; sync`\n"
+printf "\n=== NOW, on the HOST side: do `echo X > /media/$USER/Teufel\\ CBO/test.txt; sync`\n"
 printf "=== Then wait — BPs will catch the write. Sleeping 10s...\n"
 shell sleep 10
 
