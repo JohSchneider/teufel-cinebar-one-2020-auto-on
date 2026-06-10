@@ -89,9 +89,13 @@ Steps:
 | Status LED | RGB on a small front PCB (6-pin ribbon to baseboard) |
 | IR receiver | Low-voltage (1.8 V CMOS) on the same front PCB |
 
-| Baseboard (STM32) | Daughter board (DSP + BT + amp) |
-|---|---|
-| ![baseboard](pictures/base-board_IMG_4193.jpg) | ![daughter board](pictures/daughter-board_IMG_4218.jpg) |
+**Baseboard layout** — annotated component map (boxes are colour-coded by role: ports = yellow, original PMIC = red, bodged SMPS = green, MCU/IC = blue, mounting = cyan, debug = magenta):
+
+![baseboard component map](pictures/base-board_annotated.svg)
+
+**Daughter board** (DSP + BT + amp):
+
+![daughter board](pictures/daughter-board_IMG_4218.jpg)
 
 The bar has **exactly one tactile button** on the chassis — labelled SUB PAIRING and normally used to pair a wireless subwoofer. As a happy accident, that same button is also the bootloader's USB-MSC firmware-update entry gesture: holding it while powering on the bar puts it into MSC mode.
 

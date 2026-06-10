@@ -1,0 +1,441 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Teufel Cinebar One (2020) — baseboard component map.
+  Annotation overlay on top of base-board_IMG_4189.jpg.
+
+  Coordinate system matches the source image's full resolution (5152×3864).
+  All position values are approximate — feel free to nudge.
+
+  Color coding:
+    yellow   = external connectors / ports
+    red      = power section (original — PMIC area, includes the burnt
+               regulator)
+    green    = power section (bodged replacement SMPS module)
+    blue     = STM32 MCU + audio-related ICs
+    magenta  = debug / programming
+    cyan     = mounting + daughter-board interface
+-->
+
+<svg
+   viewBox="0 0 5152 3864"
+   font-family="sans-serif"
+   version="1.1"
+   id="svg48"
+   sodipodi:docname="base-board_annotated.svg"
+   inkscape:version="1.4 (e7c3feb100, 2024-10-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview48"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.16589027"
+     inkscape:cx="1998.3089"
+     inkscape:cy="2673.454"
+     inkscape:window-width="1280"
+     inkscape:window-height="891"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg48" />
+  <defs
+     id="defs1">
+    <style
+       id="style1"><![CDATA[
+      .box       { fill-opacity: 0.18; stroke-width: 10; }
+      .port      { fill: #ffeb3b; stroke: #fdd835; }
+      .power-old { fill: #f44336; stroke: #d32f2f; }
+      .power-new { fill: #4caf50; stroke: #2e7d32; }
+      .mcu       { fill: #2196f3; stroke: #1565c0; }
+      .debug     { fill: #ab47bc; stroke: #6a1b9a; }
+      .mount     { fill: #26c6da; stroke: #006064; }
+
+      .conn      { fill: none; stroke: #ffffff; stroke-width: 6;
+                   opacity: 0.65; stroke-dasharray: 24 14;
+                   stroke-linecap: round; }
+      .conn-pwr  { stroke: #ff5252; }
+      .conn-usb  { stroke: #80d8ff; }
+      .conn-aud  { stroke: #b9f6ca; }
+      .conn-ctrl { stroke: #ffe57f; }
+
+      text.label { fill: white; font-weight: 700; font-size: 70px;
+                   paint-order: stroke; stroke: black; stroke-width: 5;
+                   stroke-linejoin: round; }
+      text.small { font-size: 56px; }
+      text.kbd   { font-family: monospace; }
+
+      rect.legend-bg { fill: rgba(0,0,0,0.78); stroke: white;
+                       stroke-width: 4; rx: 28; ry: 28; }
+      text.legend-h  { fill: white; font-weight: 800; font-size: 78px; }
+      text.legend    { fill: white; font-weight: 600; font-size: 60px; }
+    ]]></style>
+    <!-- Arrow head marker for connections -->
+    <marker
+       id="arrow"
+       viewBox="0 0 10 10"
+       refX="9"
+       refY="5"
+       markerWidth="6"
+       markerHeight="6"
+       orient="auto-start-reverse">
+      <path
+         d="M0,0 L10,5 L0,10 z"
+         fill="white"
+         opacity="0.8"
+         id="path1" />
+    </marker>
+  </defs>
+  <!-- ============ Background photo ============ -->
+  <image
+     href="base-board_IMG_4189.jpg"
+     width="5152"
+     height="3864"
+     id="image1" />
+  <path
+     id="rect51"
+     class="box mount"
+     style="fill:#26c6da;fill-opacity:0.18;stroke:#006064;stroke-width:10"
+     d="m 2897.5625,2024.2748 h 800.3752 v 300.7376 h -726.3752 z"
+     sodipodi:nodetypes="ccccc" />
+  <!-- ============ Component bounding boxes ============ -->
+  <!-- Top edge: connectors (left → right). Y starts where the PCB top edge sits. -->
+  <rect
+     class="box port"
+     x="829.09204"
+     y="870.4212"
+     width="497.8284"
+     height="651.54437"
+     id="rect1" />
+  <!-- barrel jack -->
+  <rect
+     class="box port"
+     x="1407.7371"
+     y="1084.2748"
+     width="270"
+     height="310"
+     id="rect2" />
+  <!-- micro-usb -->
+  <rect
+     class="box port"
+     x="1710.687"
+     y="947.22485"
+     width="496.72495"
+     height="634.59985"
+     id="rect3" />
+  <!-- 3.5mm audio -->
+  <rect
+     class="box port"
+     x="2832.3213"
+     y="1093.4602"
+     width="358.14972"
+     height="414.92981"
+     id="rect4" />
+  <!-- sub-pair button cut-out -->
+  <rect
+     class="box port"
+     x="3150.7271"
+     y="996.75507"
+     width="505.32605"
+     height="597.94391"
+     id="rect5" />
+  <!-- toslink rx -->
+  <rect
+     class="box port"
+     x="3681.9158"
+     y="1064.4431"
+     width="562.42767"
+     height="539.29797"
+     id="rect6" />
+  <!-- hdmi -->
+  <!-- USB mux south of micro-USB -->
+  <rect
+     class="box mcu"
+     x="1388.8119"
+     y="1443.2062"
+     width="233.43129"
+     height="197.94382"
+     id="rect7" />
+  <!-- Mounting + daughter-board interface -->
+  <!-- L brass standoff -->
+  <path
+     id="rect9"
+     class="box mount"
+     style="fill:#26c6da;fill-opacity:0.18;stroke:#006064;stroke-width:10"
+     d="m 1347.3,1985.9124 h 906.3753 v 65.1844 l -305.4437,59.6094 23.4437,175.9438 H 1347.3 Z"
+     sodipodi:nodetypes="ccccccc" />
+  <!-- DB socket 1 -->
+  <!-- DB socket 2 -->
+  <!-- R brass standoff -->
+  <!-- Lower half: power section -->
+  <rect
+     class="box power-old"
+     x="515"
+     y="2450"
+     width="1030"
+     height="515"
+     id="rect12" />
+  <!-- PMIC area (burnt regulator) -->
+  <path
+     id="rect13"
+     class="box power-new"
+     style="fill:#4caf50;fill-opacity:0.18;stroke:#2e7d32;stroke-width:10"
+     d="m 1933.3748,2099.0999 939.7377,-213.1248 187.5499,727.375 -1042.0377,221.6498 z"
+     sodipodi:nodetypes="ccccc" />
+  <!-- bodged SMPS module -->
+  <!-- Lower half: STM32 + ribbon + SWD -->
+  <rect
+     class="box mcu"
+     x="3247.4255"
+     y="2577.1128"
+     width="471.87515"
+     height="416.96255"
+     id="rect14" />
+  <!-- STM32F072 -->
+  <rect
+     class="box mcu"
+     x="3115.2881"
+     y="2977.0254"
+     width="604.01257"
+     height="251.47501"
+     id="rect15" />
+  <!-- ribbon socket -->
+  <rect
+     class="box debug"
+     x="3879.8879"
+     y="2790.4875"
+     width="677.22461"
+     height="388.7626"
+     id="rect16" />
+  <!-- SWD pads -->
+  <!-- ============ Connection lines (signal flow) ============ -->
+  <!-- Power: barrel jack → PMIC area → SMPS replacement → STM32 -->
+  <path
+     class="conn conn-pwr"
+     d="M 1036.0995,1534.8621 C 868.97892,1981.6913 743.33333,1950 1030,2450"
+     marker-end="url(#arrow)"
+     id="path16"
+     sodipodi:nodetypes="cc"
+     style="stroke-width:30;stroke-dasharray:120,70.00000191;stroke-dashoffset:0" />
+  <path
+     class="conn conn-pwr"
+     d="M 1545 2700 Q 1850 2400, 2270 2450"
+     id="path17"
+     style="stroke-width:30;stroke-dasharray:120,70.00000191;stroke-dashoffset:0" />
+  <!-- USB: micro-USB → USB mux → (DSP via daughter) / (STM32 in MSC mode) -->
+  <path
+     class="conn conn-usb"
+     d="M 615 950 Q 700 1080, 750 1245"
+     marker-end="url(#arrow)"
+     id="path19" />
+  <path
+     class="conn conn-usb"
+     d="m 1453.8747,1634.4373 c -40.6288,326.679 183.8131,207.9792 153.3009,415.4125"
+     marker-end="url(#arrow)"
+     id="path20"
+     style="stroke-width:15;stroke-dasharray:60, 35;stroke-dashoffset:0"
+     sodipodi:nodetypes="cc" />
+  <path
+     class="conn conn-usb"
+     d="m 1530.5996,1649.1874 c 15.9314,56.2251 -37.9816,72.0522 79.6247,148.183 117.6064,76.1307 1075.8412,12.2475 1287.766,11.2925 207.5594,-0.9353 809.3054,153.2419 794.1055,410.4109 -12.5842,212.914 143.1542,525.5597 -105.558,518.614"
+     marker-end="url(#arrow)"
+     id="path21"
+     style="stroke-width:15;stroke-dasharray:60, 35;stroke-dashoffset:0"
+     sodipodi:nodetypes="csssc" />
+  <!-- Audio (3.5mm aux) → daughter board -->
+  <path
+     class="conn conn-aud"
+     d="m 2372.6865,1193.8624 c 180,210 -108.1663,148.646 158.5004,455.3127"
+     marker-end="url(#arrow)"
+     id="path22"
+     sodipodi:nodetypes="cc" />
+  <!-- Sub-pairing button → STM32 PA1 -->
+  <path
+     class="conn conn-ctrl"
+     d="m 3001.4369,1436.8247 c -59.212,379.8252 407.8548,809.6503 450.6635,1323.5754"
+     marker-end="url(#arrow)"
+     id="path23"
+     sodipodi:nodetypes="cc"
+     style="stroke-width:15;stroke-dasharray:60, 35;stroke-dashoffset:0" />
+  <!-- Toslink → STM32 PA4 -->
+  <path
+     class="conn conn-aud"
+     d="m 3413.8814,1554.6537 c 326.6667,676.6666 405.0852,835.213 130.844,1171.6465"
+     marker-end="url(#arrow)"
+     id="path24"
+     sodipodi:nodetypes="cc"
+     style="stroke-width:15;stroke-dasharray:60, 35;stroke-dashoffset:0" />
+  <!-- HDMI → STM32 (CEC PA5) -->
+  <!-- Ribbon → STM32 (TIM3 PWM + IR_RX) — already adjacent -->
+  <!-- SWD → STM32 -->
+  <!-- ============ Component labels ============ -->
+  <text
+     class="label"
+     x="829.09204"
+     y="845.4212"
+     id="text27">power in</text>
+  <text
+     class="label"
+     x="1407.7371"
+     y="1059.2748"
+     id="text28">µUSB</text>
+  <text
+     class="label"
+     x="1710.687"
+     y="922.22485"
+     id="text29">3.5 mm aux</text>
+  <text
+     class="label"
+     x="2579.1418"
+     y="990.09515"
+     id="text30"><tspan
+       sodipodi:role="line"
+       id="tspan48"
+       x="2579.1418"
+       y="990.09515">SUB PAIRING</tspan><tspan
+       sodipodi:role="line"
+       id="tspan49"
+       x="2579.1418"
+       y="1077.5951">/ MSC entry</tspan></text>
+  <text
+     class="label"
+     x="3150.7271"
+     y="971.75507"
+     id="text31">Toslink RX</text>
+  <text
+     class="label"
+     x="3681.9158"
+     y="1039.4431"
+     id="text32">HDMI (ARC + CEC)</text>
+  <text
+     class="label"
+     x="1389.1874"
+     y="2052.125"
+     id="text35">DSP daughter-board sockets (I²C1, I²C2, audio, BT)</text>
+  <text
+     class="label"
+     x="1267.412"
+     y="1409.0249"
+     id="text36">USB mux IC</text>
+  <text
+     class="label"
+     x="520"
+     y="2425"
+     id="text37">PMIC area<tspan
+   class="small"
+   x="520"
+   dy="80"
+   id="tspan36">(burnt — bypassed)</tspan></text>
+  <text
+     class="label"
+     x="2168.5496"
+     y="2332.6375"
+     id="text38"><tspan
+       sodipodi:role="line"
+       id="tspan50"
+       x="2168.5496"
+       y="2332.6375">bodged-in 3.3 V</tspan><tspan
+       sodipodi:role="line"
+       id="tspan51"
+       x="2168.5496"
+       y="2420.1375">SMPS module</tspan></text>
+  <text
+     class="label"
+     x="3252.4255"
+     y="2552.1128"
+     id="text39">STM32F072CBT6</text>
+  <text
+     class="label"
+     x="2740.6255"
+     y="3338.0127"
+     font-size="62"
+     id="text40">ribbon → front PCB (RGB LED + IR_RX)</text>
+  <text
+     class="label"
+     x="4361.6377"
+     y="2804.5876"
+     id="text41">SWD</text>
+  <!-- ============ Legend ============ -->
+  <g
+     transform="translate(51.475006,-8.1999527)"
+     id="g48">
+    <rect
+       class="legend-bg"
+       width="2210"
+       height="640"
+       id="rect41"
+       x="0"
+       y="0" />
+    <text
+       class="legend-h"
+       x="40"
+       y="100"
+       id="text42">Signal-flow key</text>
+    <line
+       x1="40"
+       y1="180"
+       x2="240"
+       y2="180"
+       class="conn conn-pwr"
+       id="line42" />
+    <text
+       class="legend"
+       x="280"
+       y="200"
+       id="text43">DC power rails</text>
+    <line
+       x1="40"
+       y1="270"
+       x2="240"
+       y2="270"
+       class="conn conn-usb"
+       id="line43" />
+    <text
+       class="legend"
+       x="280"
+       y="290"
+       id="text44">USB data (host → mux → STM32 or DSP)</text>
+    <line
+       x1="40"
+       y1="360"
+       x2="240"
+       y2="360"
+       class="conn conn-aud"
+       id="line44" />
+    <text
+       class="legend"
+       x="280"
+       y="380"
+       id="text45">Audio (SPDIF, analog, I²S)</text>
+    <line
+       x1="40"
+       y1="450"
+       x2="240"
+       y2="450"
+       class="conn conn-ctrl"
+       id="line45" />
+    <text
+       class="legend"
+       x="280"
+       y="470"
+       id="text46">Control / GPIO (sub-pair, CEC, SWD, IR)</text>
+    <text
+       class="legend"
+       x="40"
+       y="580"
+       font-size="48"
+       id="text47">Boxes are colour-coded: ports = yellow, original power = red,</text>
+    <text
+       class="legend"
+       x="40"
+       y="630"
+       font-size="48"
+       id="text48">bodged SMPS = green, MCU/IC = blue, mounting = cyan, debug = magenta.</text>
+  </g>
+</svg>
